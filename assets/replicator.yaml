@@ -1,0 +1,19 @@
+graph:
+  nodes:
+    # Prototype asset
+    board_square:
+      type: omni.replicator.core.OgnUsdPrim
+      inputs:
+        path: /World/board_square   # prim path or USD file
+
+    # Scatter node
+    scatter_grid:
+      type: omni.replicator.core.OgnScatter_2d
+      inputs:
+        prototype: board_square.outputs:prim
+        count: [8, 8]
+        spacing: [0.0225, 0.0225]
+        offset: [-0.07875, -0.07875, 0.0]
+
+  connections:
+    - [board_square.outputs:prim, scatter_grid.inputs:prototype]
