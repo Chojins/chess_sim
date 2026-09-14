@@ -1,0 +1,18 @@
+{
+  "status": "provisional_home_alignment_not_hardware_calibrated",
+  "robot_prim": "/World/so100_blue",
+  "legacy_names": ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"],
+  "sim_names": ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "jaw1_hinge"],
+  "legacy_home": [0, 180, 130.8, 86.6, -90, 0],
+  "sim_home_deg": [-2.9, 22.7, -48.7, 57.7, 90, -0.4],
+  "scale": [-1, -1, 1, 1, -1, 1.16279296875],
+  "notes": [
+    "q_sim_deg = sim_home_deg + scale * (q_legacy - legacy_home).",
+    "Home is approximate, from the saved USD and the user's old blue_home_position.json; offsets require physical pose validation.",
+    "Arm direction signs are provisional and checked against the recorded camera motion.",
+    "Old gripper is LINEAR, not degrees. The old 1323 encoder-tick span implies 1.16279296875 motor degrees per percent at 4096 ticks/revolution.",
+    "Gripper uses a provisional 1:1 motor-to-jaw ratio; actual linkage/aperture requires measurement.",
+    "No wrapping or clipping is applied. Out-of-limit targets are errors.",
+    "Only for this old blue calibration. Do not apply blindly to red or newly calibrated robots."
+  ]
+}

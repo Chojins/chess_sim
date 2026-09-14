@@ -1,0 +1,20 @@
+{
+  "episode_index": 0,
+  "robot_prim": "/World/so100_blue",
+  "pawn_prim": "/World/chess_pieces_blue/pawn_03",
+  "fit_joints": ["shoulder_lift", "elbow_flex", "wrist_flex"],
+  "tool_point_in_gripper_m": [0, -0.08112725, 0],
+  "max_offset_deg": 15,
+  "max_fit_rmse_mm": 1,
+  "anchors": [
+    {"phase": "pickup_e2", "frame": 185, "rank_advance": 0, "check_frames": [180, 190]},
+    {"phase": "release_e4", "frame": 240, "rank_advance": 2, "check_frames": [235, 245]}
+  ],
+  "notes": [
+    "Frames selected from recorded laptop video and gripper state: closed at 185, release beginning at 240.",
+    "Pawn_03 is in front of the blue king by mesh bounds; pawn prim origins include mesh offsets and are not piece centres.",
+    "Tool proxy is between the closed jaw distal tip bands: local Y spans -0.08212725 to -0.08012725 m, symmetric about X/Z=0.",
+    "Fit world Y/Z only, targeting pawn rank and preserving baseline proxy height. X alignment is checked separately.",
+    "This is a provisional geometric fit, not measured fingertip calibration; board ranks advance along world +Y for blue."
+  ]
+}
