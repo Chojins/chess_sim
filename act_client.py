@@ -105,10 +105,12 @@ class HomeReturnMonitor:
         return self.stable_steps >= 10
 
 
-def command(url, path, frame_id, action=None):
+def command(url, path, frame_id, action=None, options=None):
     payload = {'frame_id': frame_id}
     if action is not None:
         payload['action'] = np.asarray(action).tolist()
+    if options is not None:
+        payload['options'] = options
     req = Request(url.rstrip('/') + path, data=json.dumps(payload).encode(),
                   headers={'Content-Type': 'application/json'}, method='POST')
     try:

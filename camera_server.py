@@ -325,7 +325,7 @@ def main():
                     if command['payload']['frame_id'] != store.frame_id:
                         raise ValueError('Stale frame_id; action was not applied')
                     if command['path'] == '/reset':
-                        control.reset()
+                        control.reset(command['payload'].get('options'))
                     else:
                         control.step(command['payload'].get('action'))
                 except ValueError as error:

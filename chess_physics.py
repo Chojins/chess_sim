@@ -88,6 +88,7 @@ def configure_contacts(stage, friction=1.0, piece_mass=0.005, board_friction=Non
             if not any(path.startswith(prefix) for path in robot_colliders):
                 raise RuntimeError(f'Missing collision mesh for {color} {jaw}')
     return paths, np.asarray(centers), {'piece_mass_kg': piece_mass, 'friction': friction,
+        'square_centers_m': [list(r.GetMidpoint()) for r in squares],
         'board_top_m': float(hi[2]), 'board_friction': friction if board_friction is None else board_friction,
         'piece_collision': 'convexHull',
         'jaw_collision': 'convexDecomposition', 'contact_offset_m': 0.0005,

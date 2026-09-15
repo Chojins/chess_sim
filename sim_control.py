@@ -18,7 +18,18 @@ class SimControl:
         self.episode_id = -1
         self.reset()
 
-    def reset(self):
+    def reset(self, options=None):
+        options = {} if options is None else options
+        if not isinstance(options, dict) or set(options) - {'pawn_offset_mm'}:
+            raise ValueError('Reset options support only pawn_offset_mm')
+        try:
+            offset = np.asarray(options.get('pawn_offset_mm', [0, 0]), dtype=float)
+        except (TypeError, ValueError) as error:
+            raise ValueError('pawn_offset_mm must be a numeric pair') from error
+        if offset.shape != (2,) or not np.isfinite(offset).all() or np.max(np.abs(offset)) > 2:
+            raise ValueError('pawn_offset_mm must contain two finite values within +/-2 mm')
+        if np.any(offset) and not self.driver.pieces:
+            raise ValueError('Pawn offsets require contacts')
         for color, robot in self.driver.robots.items():
             q = self.driver.initial_robot_poses[color]
             robot.set_joint_positions(q)
@@ -33,12 +44,25 @@ class SimControl:
         # Settle the initial scene without invalidating camera graphs.
         for _ in range(10):
             self.driver.advance(self.last_target)
+        # Apply the requested small test perturbation after settling. It is
+        # part of reset, not a force or policy action; square targets stay fixed.
+        if self.driver.pieces and np.any(offset):
+            pieces = self.driver.pieces
+            index = pieces.paths.index('/World/chess_pieces_blue/pawn_03')
+            positions, rotations = pieces.view.get_world_poses()
+            positions[index, :2] += offset / 1000
+            pieces.view.set_world_poses(positions, rotations)
+            pieces.view.set_velocities(np.zeros((len(pieces.paths), 6)))
+        self.reset_options = {'pawn_offset_mm': offset.tolist()}
         self.start_time = self.driver.world.current_time
         self.driver.world.pause()
         return self.observe()
 
     def step(self, legacy_action):
-        values = np.asarray(legacy_action, dtype=float)
+        try:
+            values = np.asarray(legacy_action, dtype=float)
+        except (TypeError, ValueError) as error:
+            raise ValueError('action must contain six finite legacy joint values') from error
         if values.shape != (6,) or not np.isfinite(values).all():
             raise ValueError('action must contain six finite legacy joint values')
         target = self.mapping.to_sim_deg(values)
@@ -64,4 +88,18 @@ class SimControl:
             if key in self.physics_settings}
         if self.driver.pieces:
             result['pieces'] = self.driver.pieces.sample()
+            pieces = self.driver.pieces
+            index = pieces.paths.index('/World/chess_pieces_blue/pawn_03')
+            source = pieces.initial_centers[index].copy()
+            approximate_target = source + [0, 0.045, 0]
+            squares = np.asarray(self.physics_settings['contacts']['square_centers_m'])
+            target = squares[np.argmin(np.linalg.norm(squares[:, :2] - approximate_target[:2], axis=1))].copy()
+            target[2] = source[2]
+            result['task_geometry'] = {'move': 'e2e4', 'source_center_m': source.tolist(),
+                                       'target_center_m': target.tolist()}
+            angles = dict(zip(self.mapping.sim_names, q))
+            angles['jaw2_hinge'] = -angles['jaw1_hinge']
+            matrix = self.driver.forward(angles)['/World/so100_blue/gripper']
+            result['gripper_tip_proxy_m'] = list(matrix.Transform(self.driver.Gf.Vec3d(0, -0.08112725, 0)))
+        result['reset_options'] = self.reset_options
         return result

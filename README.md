@@ -1,5 +1,8 @@
 # Chess simulation cameras
 
+The [RL bring-up guide](RL_APPROACH.md) covers the Gymnasium environment,
+ACT execution-window evaluation, reward checks and residual-controller interface.
+
 Launch the existing chess USD and stream both SO-100 wrist cameras:
 
 ```bash
