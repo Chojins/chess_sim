@@ -2,7 +2,7 @@
 import numpy as np
 
 
-def configure_contacts(stage, friction=1.0, piece_mass=0.005):
+def configure_contacts(stage, friction=1.0, piece_mass=0.005, board_friction=None):
     from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade, PhysxSchema
     material = UsdShade.Material.Define(stage, "/World/ChessContactMaterial")
     properties = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
@@ -31,6 +31,16 @@ def configure_contacts(stage, friction=1.0, piece_mass=0.005):
     board.AddScaleOp().Set(Gf.Vec3f(*(hi - lo)))
     board.CreateVisibilityAttr("invisible")
     collider(board.GetPrim())
+    if board_friction is not None:
+        board_material = UsdShade.Material.Define(stage, '/World/ChessBoardMaterial')
+        properties = UsdPhysics.MaterialAPI.Apply(board_material.GetPrim())
+        properties.CreateStaticFrictionAttr(board_friction)
+        properties.CreateDynamicFrictionAttr(board_friction)
+        properties.CreateRestitutionAttr(0.0)
+        # Use the board coefficient for piece/board contact while preserving
+        # the higher coefficient at the gripper fingers.
+        PhysxSchema.PhysxMaterialAPI.Apply(board_material.GetPrim()).CreateFrictionCombineModeAttr('min')
+        UsdShade.MaterialBindingAPI.Apply(board.GetPrim()).Bind(board_material, materialPurpose='physics')
     paths, centers, robot_colliders = [], [], {}
     cache = UsdGeom.XformCache()
     for color in ('blue', 'red'):
@@ -78,7 +88,8 @@ def configure_contacts(stage, friction=1.0, piece_mass=0.005):
             if not any(path.startswith(prefix) for path in robot_colliders):
                 raise RuntimeError(f'Missing collision mesh for {color} {jaw}')
     return paths, np.asarray(centers), {'piece_mass_kg': piece_mass, 'friction': friction,
-        'board_top_m': float(hi[2]), 'piece_collision': 'convexHull',
+        'board_top_m': float(hi[2]), 'board_friction': friction if board_friction is None else board_friction,
+        'piece_collision': 'convexHull',
         'jaw_collision': 'convexDecomposition', 'contact_offset_m': 0.0005,
         'robot_self_collisions': False, 'robot_collision_meshes': robot_colliders}
 

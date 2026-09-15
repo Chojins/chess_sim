@@ -56,9 +56,10 @@ zero and opening still require validation. USD jaw-1 limits are -3° to 45°;
 the source URDF instead specifies ±0.6 radians, so limits have been edited
 since import. Neither should be treated as a measured hardware limit.
 
-The model repository also describes magnets in the pieces and board.
-Current contact physics includes gravity and friction, but no magnetic
-attraction. Mass, friction and drive gains remain assumed simulation values.
+The model repository also describes magnets in the pieces and board. The
+contact results below were obtained without magnetic attraction. An optional
+`--magnets` approximation has since been added; see [board magnets](board_magnets.md).
+Mass, friction, drive gains and magnetic strength remain assumed simulation values.
 
 ## Corrected contact result
 

@@ -116,7 +116,9 @@ class EpisodeReplay:
 
 class PhysicsEpisodeReplay(EpisodeReplay):
     """Drive joint position targets with PhysX; gains are bring-up settings."""
-    def __init__(self, stage, episode, mapping, output, source="states", contacts=False, speed=1.0, gripper_stiffness=2.0, friction=1.0):
+    def __init__(self, stage, episode, mapping, output, source="states", contacts=False, speed=1.0, gripper_stiffness=2.0, friction=1.0, magnets=None):
+        if magnets is not None and not contacts:
+            raise ValueError('Magnets require piece contacts')
         super().__init__(stage, episode, mapping, output, source, kinematic=False)
         from isaacsim.core.api import World
         from isaacsim.core.prims import Articulation, RigidPrim
@@ -124,7 +126,8 @@ class PhysicsEpisodeReplay(EpisodeReplay):
         contact_data = None
         if contacts:
             from chess_physics import configure_contacts
-            contact_data = configure_contacts(stage, friction=friction)
+            contact_data = configure_contacts(stage, friction=friction,
+                                              board_friction=magnets.board_friction if magnets else None)
         self.world = World(physics_dt=1 / (self.fps * 8), rendering_dt=1 / self.fps,
                            stage_units_in_meters=1.0, backend="numpy", device="cpu")
         self.robots = {}
@@ -138,9 +141,13 @@ class PhysicsEpisodeReplay(EpisodeReplay):
             piece_view = self.world.scene.add(RigidPrim(prim_paths_expr=contact_data[0], name='chess_pieces'))
         self.world.reset()
         self.pieces = None
+        self.magnets = None
         if contact_data:
             from chess_physics import PieceMonitor
             self.pieces = PieceMonitor(piece_view, contact_data[0], contact_data[1])
+            if magnets is not None:
+                from board_magnets import BoardMagnets
+                self.magnets = BoardMagnets(stage, piece_view, contact_data[0], magnets)
         self.tracking = []
         for color, robot in self.robots.items():
             values = initial[color]
@@ -163,6 +170,22 @@ class PhysicsEpisodeReplay(EpisodeReplay):
         self.indices = np.array([self.robots["blue"].get_dof_index(name) for name in self.mapping.sim_names])
         self.red_initial = self.robots["red"].get_joint_positions().copy()
         self.initial_robot_poses = {color: robot.get_joint_positions().copy() for color, robot in self.robots.items()}
+        magnet_settling = None
+        if self.magnets:
+            # Several authored pieces start a few mm off their square centre.
+            # Let the physical board settle before establishing episode/reset
+            # baselines, so startup attraction is not counted as a disturbance
+            # caused by the policy. Forces, rather than snapping, do this.
+            before = self.pieces.centers()
+            for _ in range(round(self.fps * 8)):
+                self.magnets.apply()
+                self.world.step(render=False)
+            after = self.pieces.centers()
+            self.pieces.initial_poses = tuple(x.copy() for x in piece_view.get_world_poses())
+            self.pieces.initial_centers = after.copy()
+            self.pieces.maximum_lift[:] = 0
+            magnet_settling = {'seconds': 1.0, 'piece_shifts_m': (after - before).tolist(),
+                               'max_xy_shift_m': float(np.linalg.norm((after - before)[:, :2], axis=1).max())}
         audit = json.loads((self.output / "replay_audit.json").read_text())
         audit.update(mode="physics", physics_dt=1 / (self.fps * 8), substeps=self.substeps, drive_stiffness=100 if contacts else 20, drive_damping=4 if contacts else 1,
                      fixed_arm_stiffness=1000, fixed_arm_damping=20,
@@ -170,6 +193,9 @@ class PhysicsEpisodeReplay(EpisodeReplay):
         if contact_data:
             audit['contacts'] = contact_data[2]
             audit['contacts']['gripper_stiffness_damping'] = [gripper_stiffness, gripper_stiffness / 10]
+        if self.magnets:
+            audit['magnets'] = self.magnets.describe()
+            audit['magnets']['initial_settling'] = magnet_settling
         (self.output / "replay_audit.json").write_text(json.dumps(audit, indent=2))
         self.reported = False
 
@@ -184,6 +210,8 @@ class PhysicsEpisodeReplay(EpisodeReplay):
             self.world.play()
         self.robots["blue"].set_joint_position_targets(np.deg2rad(target)[None], joint_indices=self.indices)
         for _ in range(self.substeps):
+            if self.magnets:
+                self.magnets.apply()
             self.world.step(render=False)
         measured = np.rad2deg(self.robots["blue"].get_joint_positions(joint_indices=self.indices)[0])
         if not np.isfinite(measured).all():

@@ -149,6 +149,9 @@ def parse_args():
     parser.add_argument("--control", action="store_true", help="Wait for synchronous local /step and /reset commands")
     parser.add_argument('--gripper-stiffness', type=float, default=2.0)
     parser.add_argument('--contact-friction', type=float, default=1.0)
+    parser.add_argument('--magnets', action='store_true', help='Add provisional board/piece magnetic attraction')
+    parser.add_argument('--magnet-strength', type=float, default=1.0, help='Scale magnetic potential energy')
+    parser.add_argument('--board-friction', type=float, default=0.12, help='Board sliding friction with --magnets')
     parser.add_argument("--replay-speed", type=float, default=1.0, help="Physics trajectory speed; 0.5 is half speed")
     parser.add_argument("--port", type=int, default=8080, help="Local HTTP port; 0 disables HTTP")
     parser.add_argument("--output", type=Path, default=Path(__file__).parent / "outputs" / time.strftime("%Y%m%d-%H%M%S"))
@@ -159,14 +162,17 @@ def parse_args():
         parser.error("--replay-loop requires a kinematic replay")
     if args.contacts and args.replay_mode != 'physics':
         parser.error('--contacts requires --replay-mode physics')
+    if args.magnets and (not args.contacts or not args.replay_episode):
+        parser.error('--magnets requires --contacts and --replay-episode')
     if args.control and (not args.replay_episode or args.replay_mode != 'physics' or not args.port or args.replay_loop):
         parser.error('--control requires --replay-episode for the reset pose, --replay-mode physics, and an HTTP port')
     if args.control and args.replay_speed != 1:
         parser.error('Control steps use the dataset frequency; replay-speed must be 1')
     if not math.isfinite(args.replay_speed) or not 0.1 <= args.replay_speed <= 2:
         parser.error('replay-speed must be between 0.1 and 2')
-    if not all(math.isfinite(v) and v > 0 for v in (args.gripper_stiffness, args.contact_friction)):
-        parser.error('Contact stiffness and friction must be finite and positive')
+    if not all(math.isfinite(v) and v > 0 for v in (args.gripper_stiffness, args.contact_friction,
+                                                  args.magnet_strength, args.board_friction)):
+        parser.error('Contact stiffness, friction and magnet strength must be finite and positive')
     if args.capture_empty_board and args.replay_episode:
         parser.error("Capture board calibration in a separate static run")
     if not math.isfinite(args.fps) or args.fps <= 0 or min(args.resolution) <= 0 or args.frames < 0:
@@ -240,16 +246,20 @@ def main():
         # World.reset() invalidates existing camera graphs in this Kit build.
         # Initialize physics before attaching any capture annotators.
         replay = control = None
+        magnets = None
+        if args.magnets:
+            from board_magnets import MagnetSettings
+            magnets = MagnetSettings(energy_j=0.00056 * args.magnet_strength, board_friction=args.board_friction)
         if args.control:
             from sim_control import SimControl
             control = SimControl(stage, args.replay_episode, args.joint_map, args.output, contacts=args.contacts,
-                                 gripper_stiffness=args.gripper_stiffness, friction=args.contact_friction)
+                                 gripper_stiffness=args.gripper_stiffness, friction=args.contact_friction, magnets=magnets)
             store.control_enabled = True
         elif args.replay_episode:
             from episode_replay import EpisodeReplay, PhysicsEpisodeReplay
             replay_class = PhysicsEpisodeReplay if args.replay_mode == "physics" else EpisodeReplay
             kwargs = {'contacts': args.contacts, 'speed': args.replay_speed, 'gripper_stiffness': args.gripper_stiffness,
-                      'friction': args.contact_friction} if args.replay_mode == 'physics' else {}
+                      'friction': args.contact_friction, 'magnets': magnets} if args.replay_mode == 'physics' else {}
             replay = replay_class(stage, args.replay_episode, args.joint_map, args.output, args.replay_source, **kwargs)
             print("REPLAY_READY", len(replay.targets), "frames; mode:", args.replay_mode, flush=True)
         rep.orchestrator.set_capture_on_play(False)

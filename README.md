@@ -279,7 +279,7 @@ saved separately as `calibration/legacy_blue_joint_map_physics.json`. Its higher
 grasp pose is specific to this initial validation: the knight episode still
 exceeds its wrist limits, so it is not a general calibration. See the
 [gripper audit](calibration/gripper_geometry_audit.md) for mesh comparisons,
-collision corrections and the unmodelled board magnets.
+collision corrections. A provisional magnetic board model is now available below.
 
 Start the synchronous control server using this e2e4 physics candidate:
 
@@ -288,6 +288,35 @@ Start the synchronous control server using this e2e4 physics candidate:
   --joint-map calibration/legacy_blue_joint_map_physics.json \
   --replay-mode physics --contacts --control --fps 30 --output outputs/control
 ```
+
+Add `--magnets` to reproduce the board's self-centring attraction:
+
+```bash
+./run_cameras.sh --replay-episode outputs/replay/episode_000000.npz \
+  --joint-map calibration/legacy_blue_joint_map_physics.json \
+  --replay-mode physics --contacts --magnets --control --fps 30 \
+  --output outputs/control-magnets
+```
+
+The model applies attraction at each piece's base toward all 64 square centres,
+with downward retention that fades as a piece is lifted. `--magnet-strength 1.0`
+scales attraction; `--board-friction 0.12` controls sliding separately from
+finger contact friction. A one-second physical settling phase centres initially
+misaligned pieces before defining reset poses and episode measurements; the
+startup displacements are recorded in the audit. There is no scripted snapping.
+These settings are provisional, pending comparison with the real magnets.
+See [magnetic model and calibration](calibration/board_magnets.md).
+
+Run the numerical checks with `python -m unittest test_board_magnets` in a
+NumPy environment. Run the headless centring and grasp checks with Isaac:
+
+```bash
+/home/jacob/isaacsim/_build/linux-x86_64/release/python.sh verify_magnets.py
+```
+
+Check `outputs/magnets/verification/magnet_report.json` for `passed: true`;
+this Isaac build can report exit code zero even after a Python exception.
+Stop the camera server before starting another Isaac instance on this GPU.
 
 `--control` uses the episode's first pose for reset and waits for requests.
 Physics stays paused between commands. `POST /step` accepts JSON
@@ -432,3 +461,24 @@ paused physics while idle, and repeatable robot/piece reset. Recordings can be
 checked with `python verify_recordings.py outputs/act-both-jaws` in the Python
 3.12 environment; it verifies frame/state chaining, timestamps, image shapes
 and terminal state consistency.
+
+Magnetic board verification (`outputs/magnets/verification-final/`) passed four
+off-centre releases: +8/-8 mm along one board axis, +10 mm along the other, and
+a 6 mm + 6 mm diagonal. Final distances from the CAD square centre were
+0.11–0.71 mm; the disabled-magnet comparison remained 8 mm off centre. The
+recorded half-speed grasp lifted the pawn 22.60 mm and placed it upright about
+0.44 mm from the CAD e4 centre, with no other pieces disturbed after initial
+settling. The older replay target metric uses the initial pawn centre plus
+45 mm and reports a slightly different error. This tests the provisional
+simulation model, not the strength of the real magnets.
+
+With magnets enabled, the camera/control checks passed again, including paused
+idle physics and repeatable resets. Two ACT runs were recorded under
+`outputs/act-magnets/`: the first lifted the pawn 22.80 mm, placed it about
+0.48 mm from the CAD e4 centre and returned home after 286 steps. The second
+returned home after 288 steps but failed to lift the pawn (maximum lift
+0.38 mm); it remained on e2. Thus 1/2 runs passed the unchanged task criteria.
+Both left other pieces undisturbed. All 574 recorded transitions passed frame,
+state, timestamp and image consistency checks. The magnetic centring feature
+works in these tests; ACT grasp reliability and real magnet calibration remain
+separate outstanding work.

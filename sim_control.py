@@ -6,9 +6,9 @@ from episode_replay import PhysicsEpisodeReplay
 
 
 class SimControl:
-    def __init__(self, stage, episode, mapping, output, contacts=True, gripper_stiffness=2.0, friction=1.0):
+    def __init__(self, stage, episode, mapping, output, contacts=True, gripper_stiffness=2.0, friction=1.0, magnets=None):
         self.driver = PhysicsEpisodeReplay(stage, episode, mapping, output, contacts=contacts,
-                                          gripper_stiffness=gripper_stiffness, friction=friction)
+                                          gripper_stiffness=gripper_stiffness, friction=friction, magnets=magnets)
         self.driver.external_control = True
         self.physics_settings = json.loads((Path(output) / 'replay_audit.json').read_text())
         self.driver.index = 0
@@ -60,7 +60,7 @@ class SimControl:
                   'target_legacy_action': self.mapping.to_legacy(self.last_target).tolist(),
                   'joint_limits_deg': self.limits.tolist(), 'joint_map': self.mapping.config}
         result['physics_settings'] = {key: self.physics_settings[key] for key in
-            ('physics_dt', 'substeps', 'drive_stiffness', 'drive_damping', 'fixed_arm_stiffness', 'fixed_arm_damping', 'contacts')
+            ('physics_dt', 'substeps', 'drive_stiffness', 'drive_damping', 'fixed_arm_stiffness', 'fixed_arm_damping', 'contacts', 'magnets')
             if key in self.physics_settings}
         if self.driver.pieces:
             result['pieces'] = self.driver.pieces.sample()
