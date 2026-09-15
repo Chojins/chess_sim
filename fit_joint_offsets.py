@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from scipy.optimize import least_squares
 from pxr import Gf, Usd, UsdGeom
 
 from episode_replay import EpisodeReplay, JointMap
@@ -59,6 +60,7 @@ def fit(args):
     targets = []
     for anchor in anchors:
         target = tip(anchor["frame"], zero)
+        target[2] += spec.get('tip_height_shift_mm', 0.0)
         target[:2] = pawn_center[:2]
         target[1] += anchor["rank_advance"] * pitch
         targets.append(target)
@@ -77,24 +79,13 @@ def fit(args):
         raise ValueError("No offset can satisfy the configured limits")
     # Project fit parameters into their feasible interval, never clip replay
     # samples. Every sample retains the same affine joint mapping.
-    delta = np.clip(zero, lower, upper)
-    for _ in range(60):
-        r = residual(delta)
-        jac = np.column_stack([(residual(delta + np.eye(len(active))[k] * 0.001) - r) / 0.001
-                               for k in range(len(active))])
-        step = np.linalg.lstsq(jac, -r, rcond=None)[0]
-        for scale in (1, 0.5, 0.25, 0.125, 0.0625):
-            trial = np.clip(delta + scale * step, lower, upper)
-            if np.linalg.norm(residual(trial)) < np.linalg.norm(r):
-                break
-        else:
-            break
-        change = np.linalg.norm(trial - delta)
-        delta = trial
-        if change < 1e-7:
-            break
+    optimum = least_squares(residual, np.clip(zero, lower, upper), bounds=(lower, upper),
+                            xtol=1e-10, ftol=1e-10, gtol=1e-10)
+    if not optimum.success:
+        raise ValueError('Offset optimizer did not converge: ' + optimum.message)
+    delta = optimum.x
     if np.sqrt(np.mean(residual(delta) ** 2)) > spec["max_fit_rmse_mm"]:
-        raise ValueError("Could not fit the contacts within the configured tolerance")
+        raise ValueError(f"Contact fit RMS {np.sqrt(np.mean(residual(delta) ** 2)):.3f} mm exceeds tolerance; offsets {delta}")
     correction = np.zeros(6)
     correction[active] = delta
     candidate = copy.deepcopy(replay.mapping.config)
@@ -106,7 +97,7 @@ def fit(args):
         "Candidate fitted to episode 0 e2-e4 with bases, board, signs and scales fixed.",
         "Only shoulder_lift, elbow_flex and wrist_flex offsets change; the home is now a fitted reference.",
         "Tool point approximates the centre of the distal closed-jaw tips. Absolute contact height is uncalibrated.",
-        "Preserves baseline tool height at the two fit frames; does not establish a successful physical grasp.",
+        f"Tool height target shifts {spec.get('tip_height_shift_mm', 0.0)} mm from baseline at the two fit frames; no successful grasp implied.",
         "Validate other episodes and poses before treating this as a general legacy-to-sim calibration."]
     validation = {}
     for name, values in [("states", replay.targets), ("actions", actions)]:

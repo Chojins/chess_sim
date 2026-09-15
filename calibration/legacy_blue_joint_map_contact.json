@@ -1,0 +1,71 @@
+{
+  "status": "provisional_contact_tuning",
+  "robot_prim": "/World/so100_blue",
+  "legacy_names": [
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll",
+    "gripper"
+  ],
+  "sim_names": [
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll",
+    "jaw1_hinge"
+  ],
+  "legacy_home": [
+    0,
+    180,
+    130.8,
+    86.6,
+    -90,
+    0
+  ],
+  "sim_home_deg": [
+    -2.9,
+    23.58509463518037,
+    -50.50952821515855,
+    50.79032175452076,
+    90.0,
+    -2.5
+  ],
+  "scale": [
+    -1,
+    -1,
+    1,
+    1,
+    -1,
+    1.16279296875
+  ],
+  "notes": [
+    "q_sim_deg = sim_home_deg + scale * (q_legacy - legacy_home).",
+    "Home is approximate, from the saved USD and the user's old blue_home_position.json; offsets require physical pose validation.",
+    "Arm direction signs are provisional and checked against the recorded camera motion.",
+    "Old gripper is LINEAR, not degrees. The old 1323 encoder-tick span implies 1.16279296875 motor degrees per percent at 4096 ticks/revolution.",
+    "Gripper uses a provisional 1:1 motor-to-jaw ratio; actual linkage/aperture requires measurement.",
+    "No wrapping or clipping is applied. Out-of-limit targets are errors.",
+    "Only for this old blue calibration. Do not apply blindly to red or newly calibrated robots.",
+    "Candidate fitted to episode 0 e2-e4 with bases, board, signs and scales fixed.",
+    "Only shoulder_lift, elbow_flex and wrist_flex offsets change; the home is now a fitted reference.",
+    "Tool point approximates the centre of the distal closed-jaw tips. Absolute contact height is uncalibrated.",
+    "Preserves baseline tool height at the two fit frames; does not establish a successful physical grasp.",
+    "Validate other episodes and poses before treating this as a general legacy-to-sim calibration.",
+    "Contact trial: gripper zero moved from -0.4 to -2.5 degrees within authored -3 degree lower limit; not hardware calibrated."
+  ],
+  "fit": {
+    "constraints": "calibration/episode_000000_contacts.json",
+    "report": "outputs/replay/board-fit/fit_report.json",
+    "offset_from_original_deg": [
+      0.0,
+      0.8850946351803677,
+      -1.809528215158546,
+      -6.909678245479245,
+      0.0,
+      0.0
+    ]
+  }
+}

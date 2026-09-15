@@ -33,9 +33,11 @@ class PairedCameraClient:
             body = response.read()
         with np.load(io.BytesIO(body), allow_pickle=False) as pair:
             metadata = {"frame_id": int(pair["frame_id"]), "simulation_time": float(pair["simulation_time"])}
+            if 'observation_json' in pair.files:
+                metadata['observation'] = json.loads(str(pair['observation_json']))
             images = {}
             for name in pair.files:
-                if name in metadata:
+                if name in metadata or name == 'observation_json':
                     continue
                 rgb = pair[name]
                 if rgb.ndim != 3 or rgb.shape[2] != 3 or rgb.dtype != np.uint8:

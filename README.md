@@ -242,6 +242,124 @@ To overlay the move on the stationary red view only:
 The saved fixed-pose board homography is invalid for the moving blue wrist.
 Revalidate red's board calibration if its pose drifts under physics.
 
+## Contact physics, synchronous control and ACT
+
+The original pieces have no rigid-body/collision setup and the robot jaw
+collision groups are empty. `--contacts` supplies temporary physical geometry:
+5 g pieces with convex hulls, decomposed jaw meshes, hulls for robot housings,
+a flat board collider, friction 1.0, and 0.5 mm contact offsets. Robot self
+collision is disabled because the housing hulls and jaw gears overlap; dedicated
+collision meshes are needed before relying on self-contact. These are assumed
+simulation parameters, not measured hardware dynamics. The USD files are not saved.
+
+With contacts enabled, arm gains are 100/4, the fixed red arm uses 1000/20,
+and the gripper uses 2/0.2 (stiffness/damping), configurable with
+`--gripper-stiffness` (damping is one tenth of stiffness). `--contact-friction`
+sets the shared material friction. Physics runs at
+240 Hz. Pieces are never attached to the gripper by a scripted constraint.
+`physics_samples.jsonl` logs measured trajectories and piece movement during
+physics replay. A camera replay completing does not establish a successful grasp.
+
+The modified gripper visuals come from `Moving_Jaw_1.stl`, `Moving_Jaw_2.stl`
+and `Fixed_Jaw_mod_m.stl` in `SO100/assets`, not the standard single-moving-jaw
+gripper. A contact-setup bug was found on 2026-09-15: blue jaw 1's visual group
+is a USD instance, and ordinary traversal skipped its mesh. Contact setup now
+expands robot visual instances in the session layer, checks that both jaws on
+both robots have collision meshes, and records every collider path in the audit.
+Earlier `contact-test*`, `contact-height*`, `contact-centered`,
+`control-replay-compliant` and `act-integration` results used an incomplete
+collider set; they remain useful for transport/recording checks but cannot
+validate gripper dynamics. Their parameter trials should not be promoted as
+calibration results. Runs beginning `both-jaws` use the corrected colliders.
+
+With corrected colliders, `outputs/replay/both-jaws-neck/` completed the recorded
+e2e4 move at half speed: 22.82 mm lift, 1.35 mm final position error, upright
+placement and no other pieces displaced over 3 mm. The successful candidate is
+saved separately as `calibration/legacy_blue_joint_map_physics.json`. Its higher
+grasp pose is specific to this initial validation: the knight episode still
+exceeds its wrist limits, so it is not a general calibration. See the
+[gripper audit](calibration/gripper_geometry_audit.md) for mesh comparisons,
+collision corrections and the unmodelled board magnets.
+
+Start the synchronous control server using this e2e4 physics candidate:
+
+```bash
+./run_cameras.sh --replay-episode outputs/replay/episode_000000.npz \
+  --joint-map calibration/legacy_blue_joint_map_physics.json \
+  --replay-mode physics --contacts --control --fps 30 --output outputs/control
+```
+
+`--control` uses the episode's first pose for reset and waits for requests.
+Physics stays paused between commands. `POST /step` accepts JSON
+`{"frame_id": 0, "action": [six legacy values]}`; `POST /reset` accepts
+`{"frame_id": 0}`. Use the actual latest frame ID. Each step advances exactly
+1/30 second, then publishes measured state and both cameras together.
+`/frames.npz` additionally contains `observation_json`; `PairedCameraClient`
+decodes it into `metadata["observation"]`. Invalid and out-of-limit actions,
+stale frame IDs and concurrent queued commands are rejected; actions are not
+silently clipped. Reset teleports the simulated robots and pieces to their
+initial poses, zeros velocities, settles them, and resets the episode clock
+without rebuilding camera graphs. This is a simulation reset, not a learned
+return-home action.
+
+Run the checkpoint in the existing Python 3.12 environment:
+
+```bash
+/home/jacob/miniconda3/envs/lerobot312/bin/python act_client.py \
+  --device cpu --steps 400 --episodes 2 --move e2e4 --output outputs/act-two-episodes
+```
+
+The adapter loads the local `checkpoints/last/pretrained_model`, checks all
+network weight keys strictly, and uses its embedded normalization statistics.
+It supplies legacy measured joint state, red's highlighted image as `laptop`,
+and blue's raw wrist image as `phone`. RGB images are converted to CHW floats
+in [0,1] before applying the saved mean/std. ACT's original 100-action queue
+is preserved unless `--n-action-steps` is explicitly set. It is reset between
+episodes. The lightweight overlay was verified pixel-for-pixel against
+`chess_vision` for three moves; it avoids that module's unused 3-D dependencies.
+After the arm departs home by more than 15 degrees, ten consecutive steps
+within 5 degrees of its initial arm pose end the rollout. This prevents a
+continuously highlighted move from starting another attempt after returning
+home. `--steps` remains an upper bound. Returning home is distinct from grasp
+success; the result records the termination reason and task measurements.
+
+CPU inference is intentional here: this machine's Python 3.12 PyTorch build
+uses CUDA 13, which the installed driver does not support. A first CPU action
+chunk took about 0.21 seconds in the smoke test. No driver, environment,
+checkpoint or dataset migration was needed. Rendering/transport need not run
+in real time: physics advances only when a command is accepted.
+
+Each run writes diagnostic simulated episodes: input images (including exactly
+the highlighted policy image), observed legacy state, commanded actions,
+next state, frame IDs and simulation timestamps, plus terminal images and a
+manifest with checkpoint hash and mapping. This is `chess_sim_transitions_v1`,
+not a LeRobot training dataset. Failed and stopped runs retain their failure
+reason and must not be treated as expert demonstrations. The current reset
+board, task measurement and ACT runner support blue `e2e4` only.
+
+Useful checks, with the control server running:
+
+```bash
+/home/jacob/miniconda3/envs/lerobot312/bin/python verify_control.py
+/home/jacob/miniconda3/envs/lerobot312/bin/python replay_control.py \
+  --repeat 2 --output outputs/control-replay
+```
+
+The first verifies paired observations, invalid/stale rejection, fixed stepping,
+idle pause and reset repeatability. The second drives the recorded episode via
+the same interface as ACT; `--repeat 2` gives half-speed physical motion.
+Both checks reset the simulation, so run one controller at a time.
+
+Independent recorded moves were checked without refitting (`g1f3`, episode 1;
+`d2d4`, episode 2). Board-fit estimated pickup/release errors were 8.11/8.00 mm
+and 1.49/7.51 mm, compared with 30.95/30.05 mm and 21.60/23.03 mm for the original
+home map. Both board-fit trajectories satisfy state and action limits. These
+are geometric checks against video-selected contact frames, not successful
+physical replays with reconstructed game positions. Reproduce with
+`./run_usd_python.sh validate_joint_map.py` after exporting episodes 1 and 2.
+The contact-height trial violates limits in episode 1 and is not a general
+replacement for the board-fit map.
+
 ## Runtime and assets
 
 The launcher defaults to the existing installation at
@@ -292,3 +410,25 @@ them to 57.3 degrees/s; this contributes to tracking lag. Rendering currently
 runs slower than the recorded 30 Hz, although physics advances at its configured
 time step. The report is under `outputs/replay/physics-final/`; kinematic
 comparison images are under `outputs/replay/run1/`.
+
+On 2026-09-15, after fixing the skipped instanced jaw collider, a half-speed
+recorded replay lifted the pawn 22.82 mm and placed it upright 1.35 mm from e4's
+target centre. Both camera streams completed the run. See
+`outputs/replay/both-jaws-neck/physics_report.json`.
+
+Two subsequent ACT runs using the corrected contacts and
+`legacy_blue_joint_map_physics.json` terminated on return home after 282 and
+284 steps. They lifted the pawn 22.39/22.97 mm and placed it upright on e4,
+with 4.39/5.36 mm centre error and no other pieces displaced over 3 mm.
+Return-home maximum arm errors were 3.27/3.14 degrees. The first passed the
+predefined success test (5 mm placement, upright, lift over 5 mm, no disturbed
+pieces, home within 5 degrees); the second narrowly failed placement tolerance.
+This is a two-run bring-up result, not a reliability estimate. Results and
+566 recorded transitions are in `outputs/act-both-jaws/`.
+
+The synchronous control integration check passed with corrected colliders:
+paired observations, finite/limit/stale action rejection, 1/30-second stepping,
+paused physics while idle, and repeatable robot/piece reset. Recordings can be
+checked with `python verify_recordings.py outputs/act-both-jaws` in the Python
+3.12 environment; it verifies frame/state chaining, timestamps, image shapes
+and terminal state consistency.

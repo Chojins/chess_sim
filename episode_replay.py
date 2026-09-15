@@ -116,11 +116,16 @@ class EpisodeReplay:
 
 class PhysicsEpisodeReplay(EpisodeReplay):
     """Drive joint position targets with PhysX; gains are bring-up settings."""
-    def __init__(self, stage, episode, mapping, output, source="states"):
+    def __init__(self, stage, episode, mapping, output, source="states", contacts=False, speed=1.0, gripper_stiffness=2.0, friction=1.0):
         super().__init__(stage, episode, mapping, output, source, kinematic=False)
         from isaacsim.core.api import World
-        from isaacsim.core.prims import Articulation
-        self.world = World(physics_dt=1 / (self.fps * 4), rendering_dt=1 / self.fps,
+        from isaacsim.core.prims import Articulation, RigidPrim
+        self.substeps = max(1, round(8 / speed))
+        contact_data = None
+        if contacts:
+            from chess_physics import configure_contacts
+            contact_data = configure_contacts(stage, friction=friction)
+        self.world = World(physics_dt=1 / (self.fps * 8), rendering_dt=1 / self.fps,
                            stage_units_in_meters=1.0, backend="numpy", device="cpu")
         self.robots = {}
         initial = {}
@@ -129,7 +134,13 @@ class PhysicsEpisodeReplay(EpisodeReplay):
             initial[color] = {name: stage.GetPrimAtPath(f"{root}/joints/{name}").GetAttribute(
                 "state:angular:physics:position").Get() for name in self.mapping.sim_names + ["jaw2_hinge"]}
             self.robots[color] = self.world.scene.add(Articulation(prim_paths_expr=root, name=f"replay_{color}"))
+        if contact_data:
+            piece_view = self.world.scene.add(RigidPrim(prim_paths_expr=contact_data[0], name='chess_pieces'))
         self.world.reset()
+        self.pieces = None
+        if contact_data:
+            from chess_physics import PieceMonitor
+            self.pieces = PieceMonitor(piece_view, contact_data[0], contact_data[1])
         self.tracking = []
         for color, robot in self.robots.items():
             values = initial[color]
@@ -141,18 +152,24 @@ class PhysicsEpisodeReplay(EpisodeReplay):
             robot.set_joint_velocities(np.zeros_like(pose))
             robot.set_joint_position_targets(pose)
             # Temporary gains for position tracking, not identified real-servo parameters.
-            kp = np.full_like(pose, 20.0 if color == "blue" else 1000.0)
-            kd = np.full_like(pose, 1.0 if color == "blue" else 20.0)
+            kp = np.full_like(pose, (100.0 if contacts else 20.0) if color == "blue" else 1000.0)
+            kd = np.full_like(pose, (4.0 if contacts else 1.0) if color == "blue" else 20.0)
             for i, name in enumerate(robot.dof_names):
                 if name == "jaw2_hinge":
                     kp[0, i] = kd[0, i] = 0
+                elif name == 'jaw1_hinge' and contacts:
+                    kp[0, i], kd[0, i] = gripper_stiffness, gripper_stiffness / 10
             robot.set_gains(kps=kp, kds=kd)
         self.indices = np.array([self.robots["blue"].get_dof_index(name) for name in self.mapping.sim_names])
         self.red_initial = self.robots["red"].get_joint_positions().copy()
+        self.initial_robot_poses = {color: robot.get_joint_positions().copy() for color, robot in self.robots.items()}
         audit = json.loads((self.output / "replay_audit.json").read_text())
-        audit.update(mode="physics", physics_dt=1 / (self.fps * 4), drive_stiffness=20, drive_damping=1,
+        audit.update(mode="physics", physics_dt=1 / (self.fps * 8), substeps=self.substeps, drive_stiffness=100 if contacts else 20, drive_damping=4 if contacts else 1,
                      fixed_arm_stiffness=1000, fixed_arm_damping=20,
                      note="Session-only bring-up gains; real motor dynamics are not identified")
+        if contact_data:
+            audit['contacts'] = contact_data[2]
+            audit['contacts']['gripper_stiffness_damping'] = [gripper_stiffness, gripper_stiffness / 10]
         (self.output / "replay_audit.json").write_text(json.dumps(audit, indent=2))
         self.reported = False
 
@@ -160,23 +177,33 @@ class PhysicsEpisodeReplay(EpisodeReplay):
         if not self.world.is_playing():
             self.world.play()
         self.index = min(self.index + 1, len(self.targets) - 1)
-        self.robots["blue"].set_joint_position_targets(np.deg2rad(self.targets[self.index])[None], joint_indices=self.indices)
-        for _ in range(4):
+        return self.advance(self.targets[self.index])
+
+    def advance(self, target):
+        if not self.world.is_playing():
+            self.world.play()
+        self.robots["blue"].set_joint_position_targets(np.deg2rad(target)[None], joint_indices=self.indices)
+        for _ in range(self.substeps):
             self.world.step(render=False)
         measured = np.rad2deg(self.robots["blue"].get_joint_positions(joint_indices=self.indices)[0])
         if not np.isfinite(measured).all():
             raise RuntimeError("Non-finite physics joint state")
-        error = measured - self.targets[self.index]
+        error = measured - target
         if len(self.tracking) < len(self.targets):
             self.tracking.append(error)
         report = {"mode": "physics", "source": self.source, "episode_frame": self.index,
                   "physics_time": self.world.current_time,
                   "episode_time": float(self.timestamps[self.index]), "total_frames": len(self.targets),
                   "complete": self.index == len(self.targets) - 1,
-                  "legacy_state": self.legacy[self.index].tolist(), "sim_joint_deg": self.targets[self.index].tolist(),
+                  "legacy_state": self.mapping.to_legacy(target).tolist(), "sim_joint_deg": np.asarray(target).tolist(),
                   "measured_joint_deg": measured.tolist(), "tracking_error_deg": error.tolist(),
                   "red_drift_max_deg": float(np.rad2deg(np.abs(self.robots['red'].get_joint_positions() - self.red_initial)).max())}
-        if self.index == len(self.targets) - 1 and not self.reported:
+        if self.pieces:
+            report['pieces'] = self.pieces.sample()
+        if not getattr(self, 'external_control', False):
+            with (self.output / 'physics_samples.jsonl').open('a') as stream:
+                stream.write(json.dumps(report) + '\n')
+        if self.index == len(self.targets) - 1 and not self.reported and not getattr(self, 'external_control', False):
             errors = np.array(self.tracking)
             report["tracking_rmse_deg"] = np.sqrt(np.mean(errors ** 2, axis=0)).tolist()
             report["tracking_max_abs_deg"] = np.abs(errors).max(axis=0).tolist()

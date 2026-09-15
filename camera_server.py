@@ -10,6 +10,7 @@ import json
 import math
 from pathlib import Path
 import threading
+import queue
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -22,6 +23,8 @@ class FrameStore:
         self.pair = b""
         self.stats = {}
         self.closed = False
+        self.control_enabled = False
+        self.commands = queue.Queue(maxsize=1)
 
     def publish(self, frame_id, images, pair, stats):
         with self.condition:
@@ -33,6 +36,28 @@ def make_handler(store):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
+
+        def do_POST(self):
+            if not store.control_enabled or self.path not in ('/step', '/reset'):
+                self.send_error(404)
+                return
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 < length <= 4096 or self.headers.get('Content-Type') != 'application/json':
+                    raise ValueError('Expected a small JSON body')
+                payload = json.loads(self.rfile.read(length))
+                if not isinstance(payload, dict) or type(payload.get('frame_id')) is not int:
+                    raise ValueError('frame_id is required')
+                command = {'path': self.path, 'payload': payload, 'done': threading.Event(),
+                           'expires': time.monotonic() + 30}
+                store.commands.put_nowait(command)
+            except (ValueError, queue.Full) as error:
+                self.respond(json.dumps({'error': str(error)}).encode(), 'application/json', 400)
+                return
+            if not command['done'].wait(30):
+                self.respond(b'{"error":"Control timed out; read current state before retrying"}', 'application/json', 504)
+                return
+            self.respond(json.dumps(command['result']).encode(), 'application/json', command.get('status', 200))
 
         def do_GET(self):
             path = self.path.split("?", 1)[0]
@@ -46,7 +71,9 @@ def make_handler(store):
                                   for name in store.stats.get("cameras", {}))
                         + '</section><script>async function status(){try{'
                         'const s=await(await fetch("/stats")).json();'
-                        'document.getElementById("mode").textContent=s.replay?'
+                        'document.getElementById("mode").textContent=s.replay?.mode==="policy_control"?'
+                        '"Policy control · episode "+s.replay.episode_id+" · step "+s.replay.control_step:'
+                        's.replay?'
                         's.replay.mode+" replay: frame "+s.replay.episode_frame+" / "+(s.replay.total_frames-1)'
                         '+(s.replay.complete?" (complete)":""):'
                         '"Physics paused for camera checks";'
@@ -91,8 +118,8 @@ def make_handler(store):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-        def respond(self, body, mime):
-            self.send_response(200)
+        def respond(self, body, mime, status=200):
+            self.send_response(status)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
@@ -118,6 +145,11 @@ def parse_args():
     parser.add_argument("--replay-source", choices=("states", "actions"), default="states")
     parser.add_argument("--replay-mode", choices=("kinematic", "physics"), default="kinematic")
     parser.add_argument("--replay-loop", action="store_true", help="Repeat kinematic replay for visual inspection")
+    parser.add_argument("--contacts", action="store_true", help="Add session-only piece and robot contact physics")
+    parser.add_argument("--control", action="store_true", help="Wait for synchronous local /step and /reset commands")
+    parser.add_argument('--gripper-stiffness', type=float, default=2.0)
+    parser.add_argument('--contact-friction', type=float, default=1.0)
+    parser.add_argument("--replay-speed", type=float, default=1.0, help="Physics trajectory speed; 0.5 is half speed")
     parser.add_argument("--port", type=int, default=8080, help="Local HTTP port; 0 disables HTTP")
     parser.add_argument("--output", type=Path, default=Path(__file__).parent / "outputs" / time.strftime("%Y%m%d-%H%M%S"))
     args = parser.parse_args()
@@ -125,6 +157,16 @@ def parse_args():
         parser.error(f"USD does not exist: {args.usd}")
     if args.replay_loop and (not args.replay_episode or args.replay_mode != "kinematic"):
         parser.error("--replay-loop requires a kinematic replay")
+    if args.contacts and args.replay_mode != 'physics':
+        parser.error('--contacts requires --replay-mode physics')
+    if args.control and (not args.replay_episode or args.replay_mode != 'physics' or not args.port or args.replay_loop):
+        parser.error('--control requires --replay-episode for the reset pose, --replay-mode physics, and an HTTP port')
+    if args.control and args.replay_speed != 1:
+        parser.error('Control steps use the dataset frequency; replay-speed must be 1')
+    if not math.isfinite(args.replay_speed) or not 0.1 <= args.replay_speed <= 2:
+        parser.error('replay-speed must be between 0.1 and 2')
+    if not all(math.isfinite(v) and v > 0 for v in (args.gripper_stiffness, args.contact_friction)):
+        parser.error('Contact stiffness and friction must be finite and positive')
     if args.capture_empty_board and args.replay_episode:
         parser.error("Capture board calibration in a separate static run")
     if not math.isfinite(args.fps) or args.fps <= 0 or min(args.resolution) <= 0 or args.frames < 0:
@@ -197,11 +239,18 @@ def main():
         print("STAGE", json.dumps(inventory), flush=True)
         # World.reset() invalidates existing camera graphs in this Kit build.
         # Initialize physics before attaching any capture annotators.
-        replay = None
-        if args.replay_episode:
+        replay = control = None
+        if args.control:
+            from sim_control import SimControl
+            control = SimControl(stage, args.replay_episode, args.joint_map, args.output, contacts=args.contacts,
+                                 gripper_stiffness=args.gripper_stiffness, friction=args.contact_friction)
+            store.control_enabled = True
+        elif args.replay_episode:
             from episode_replay import EpisodeReplay, PhysicsEpisodeReplay
             replay_class = PhysicsEpisodeReplay if args.replay_mode == "physics" else EpisodeReplay
-            replay = replay_class(stage, args.replay_episode, args.joint_map, args.output, args.replay_source)
+            kwargs = {'contacts': args.contacts, 'speed': args.replay_speed, 'gripper_stiffness': args.gripper_stiffness,
+                      'friction': args.contact_friction} if args.replay_mode == 'physics' else {}
+            replay = replay_class(stage, args.replay_episode, args.joint_map, args.output, args.replay_source, **kwargs)
             print("REPLAY_READY", len(replay.targets), "frames; mode:", args.replay_mode, flush=True)
         rep.orchestrator.set_capture_on_play(False)
         for name, path in args.cameras.items():
@@ -253,9 +302,29 @@ def main():
         next_report = start
         while app.is_running() and (not args.frames or count < args.frames):
             frame_start = time.monotonic()
+            command = None
+            if control and count:
+                try:
+                    command = store.commands.get(timeout=0.05)
+                except queue.Empty:
+                    app.update()  # timeline is paused between control steps
+                    continue
+                try:
+                    if time.monotonic() > command['expires']:
+                        raise ValueError('Expired command')
+                    if command['payload']['frame_id'] != store.frame_id:
+                        raise ValueError('Stale frame_id; action was not applied')
+                    if command['path'] == '/reset':
+                        control.reset()
+                    else:
+                        control.step(command['payload'].get('action'))
+                except ValueError as error:
+                    command.update(result={'error': str(error)}, status=409)
+                    command['done'].set()
+                    continue
             if replay and args.replay_loop and replay.index == len(replay.targets) - 1:
                 replay.index = -1
-            replay_status = replay.step() if replay else None
+            replay_status = control.observe() if control else (replay.step() if replay else None)
             # Capture both products without advancing beyond the pose just set
             # by the replay (or the unchanged scene during camera bring-up).
             rep.orchestrator.step(rt_subframes=1, delta_time=0.0, pause_timeline=not (replay and args.replay_mode == "physics"))
@@ -278,6 +347,10 @@ def main():
             if len(arrays) != len(annotators):
                 missing += 1
                 consecutive_missing += 1
+                if command:
+                    command.update(result={'error': 'Action applied, but paired capture failed; reset required'}, status=500)
+                    command['done'].set()
+                    raise RuntimeError('Control capture failed after action')
                 if consecutive_missing >= 30:
                     raise RuntimeError("No complete camera frames for 30 consecutive attempts")
                 continue
@@ -288,14 +361,18 @@ def main():
             stats = {"status": "running", "frame_id": count - 1, "complete_pairs": valid,
                      "missing_pairs": missing, "elapsed_seconds": elapsed,
                      "capture_fps": valid / max(elapsed, 1e-6), "target_fps": args.fps,
-                     "simulation_time": simulation_time, "physics_running": bool(replay and args.replay_mode == "physics"),
+                     "simulation_time": simulation_time, "physics_running": bool((replay or control) and args.replay_mode == "physics"),
                      "cameras": args.cameras, "resolution": args.resolution,
                      "pixel_std": {name: float(rgb.std()) for name, rgb in arrays.items()}}
             if replay_status:
                 stats["replay"] = replay_status
             buffer = io.BytesIO()
-            np.savez(buffer, **arrays, frame_id=count - 1, simulation_time=simulation_time)
+            extras = {'observation_json': np.array(json.dumps(replay_status))} if control else {}
+            np.savez(buffer, **arrays, frame_id=count - 1, simulation_time=simulation_time, **extras)
             store.publish(count - 1, images, buffer.getvalue(), stats)
+            if command:
+                command['result'] = {'frame_id': count - 1, 'observation': replay_status}
+                command['done'].set()
             if valid == 1:
                 for name, rgb in arrays.items():
                     Image.fromarray(rgb).save(args.output / f"{name}.png")
@@ -317,6 +394,8 @@ def main():
         store.stats["status"] = "interrupted"
     except Exception as error:
         store.stats.update(status="error", error=str(error))
+        import traceback
+        traceback.print_exc()
         raise
     finally:
         (args.output / "stats.json").write_text(json.dumps(store.stats, indent=2))
