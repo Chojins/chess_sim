@@ -41,7 +41,11 @@ class ChessEnv(gym.Env):
         self.sim_home = np.array(mapping['sim_home_deg'])
         self.legacy_home = np.array(mapping['legacy_home'])
         bounds = self.legacy_home[:, None] + (limits - self.sim_home[:, None]) / self.scale[:, None]
-        self.action_space = spaces.Box(bounds.min(1).astype(np.float32), bounds.max(1).astype(np.float32))
+        # Round toward the interval interior. Nearest float32 rounding can put
+        # a clipped endpoint just beyond the server's strict physical limits.
+        low = np.nextafter(bounds.min(1).astype(np.float32), np.float32(np.inf))
+        high = np.nextafter(bounds.max(1).astype(np.float32), np.float32(-np.inf))
+        self.action_space = spaces.Box(low, high)
         self.observation_space = spaces.Dict({
             'state': spaces.Box(-np.inf, np.inf, (6,), np.float32),
             'laptop_rgb': spaces.Box(0, 255, self.images['red'].shape, np.uint8),

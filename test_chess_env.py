@@ -65,6 +65,18 @@ class EnvTests(unittest.TestCase):
         env.reset()
         self.assertFalse(env.needs_reset)
 
+    def test_float32_endpoints_stay_inside_physical_limits(self):
+        mapping = self.server.meta['observation']['joint_map']
+        mapping['sim_home_deg'] = [-2.35, 18.3253403877, -50.8643522466, 56.6537643433, 90, -2.5]
+        mapping['legacy_home'] = [0, 180, 130.8, 86.6, -90, 0]
+        env = ChessEnv()
+        limits = np.array(self.server.meta['observation']['joint_limits_deg'])
+        for endpoint in (env.action_space.low, env.action_space.high):
+            self.assertEqual(endpoint.dtype, np.float32)
+            physical = env.sim_home + env.scale * (endpoint.astype(float) - env.legacy_home)
+            self.assertTrue(np.all(physical >= limits[:, 0]), (physical, limits))
+            self.assertTrue(np.all(physical <= limits[:, 1]), (physical, limits))
+
     def test_malformed_server_requests_fail_before_mutation(self):
         from sim_control import SimControl
         control = SimControl.__new__(SimControl)

@@ -133,17 +133,16 @@ queued trajectory, and camera history may be useful. Time-limit observations
 include a valid next base action for bootstrapping. `close()` does not terminate
 the externally managed simulator.
 
-## Next training decisions
+## Training scope
 
-Choose the baseline execution window from a larger held-out evaluation after
-the pilot, then attach a small residual learner and validate its reward use.
+Keep the 100-action baseline for the initial residual pilot, then choose the
+execution window from a larger held-out evaluation before scaling training.
 Keep policy inputs available on the real robot; privileged simulator state
 can be used by a separate critic or a teacher intended for later distillation.
 
-The current policy environment has PyTorch 2.11.0 built for CUDA 13.0; its
-CUDA initialization fails with the installed driver. These evaluations use
-CPU inference. Select a compatible PyTorch/CUDA environment and test GPU
-compute before a substantial training run. The current HTTP/image transport
+The original policy environment has PyTorch 2.11.0 built for CUDA 13.0;
+the September 15 evaluations used CPU inference. The isolated learner
+environment described below uses PyTorch 2.7.1 with CUDA 12.8. The HTTP/image transport
 and one rendered scene also limit throughput; measure before scaling to
 multiple environments. No driver or package changes are made by these scripts.
 
@@ -175,3 +174,150 @@ This small pilot gives no evidence to adopt a shorter execution window. Keep
 RL run. Unlike the earlier nominal two-trial check, this experiment includes
 small reset perturbations and stricter scoring; it does not establish that
 ACT can never succeed. No learned residual weights were produced.
+
+## Residual SAC pilot, prepared 2026-09-20
+
+`train_residual.py` implements a small SAC learner over frozen ACT. Its actor
+receives 4,096 frozen ResNet18 camera features from the existing checkpoint,
+measured joints, ACT's proposed action, previous correction, chunk phase,
+episode phase and a shoulder-angle gate. Camera normalization remains the
+checkpoint's original normalization. Object positions are used for reward
+only. The learner starts with a zero deterministic correction and uses gSDE
+exploration, refreshed every 12 control steps.
+
+Corrections remain bounded to +/-2 degrees per arm joint and +/-3 degrees at
+the gripper, followed by explicit joint-limit projection. A smooth gate is
+zero at home, rises between shoulder angles 60 and 80 degrees, stays at one
+through 120 degrees, and falls to zero at 140 degrees. This is a heuristic for
+the validated e2e4 motion, not a general chess controller.
+
+The task reward and success criteria above remain in force. Additional
+potential shaping encourages approach: `Phi = gate * clip(1 - clearance/0.03,
+0, 1)` and `reward += 2 * (0.99 * Phi(next) - Phi(current))`. Clearance is the
+tool-point distance to pawn centre. True terminations use zero next potential;
+timeouts retain it for bootstrapping. Shaping, residual cost, task reward and
+success are logged separately so shaped return cannot substitute for success.
+
+The grasp comparison in [calibration/grasp_comparison.md](calibration/grasp_comparison.md)
+shows about 10 mm tool-position error at ACT closure versus the successful
+recording. An offline kinematic fit within the proposed arm correction bounds
+reduces that error to 1.7–2.0 mm. It does not demonstrate a physical grasp.
+
+### Isolated environment
+
+The existing `.venv-rl` is prepared. To recreate it, from this repository:
+
+```bash
+./setup_rl_env.sh
+./run_rl_python.sh -m pip check
+./run_rl_python.sh verify_rl_runtime.py
+./run_rl_python.sh verify_rl_runtime.py --cuda --output outputs/rl-runtime-gpu.json
+```
+
+Setup uses Python 3.12 from the existing `lerobot312` environment and imports
+the checkout at `/home/jacob/lerobot/src` through a `.pth` file. Override
+`RL_PYTHON` and `LEROBOT_SRC` if these paths change. Packages are installed
+only in `.venv-rl`; Isaac, the old policy environment and the LeRobot checkout
+are not modified. The launcher clears inherited ROS/CUDA Python/library paths.
+`requirements-rl.txt` defines the install constraints; `requirements-rl-lock.txt`
+records the tested environment. Its `lerobot==0.5.2` entry identifies the local
+checkout metadata, not an instruction to replace that checkout with PyPI code.
+The runtime parity check needs the saved `outputs/act-window-pilot` fixtures.
+
+CPU verification passed: the largest first-action difference from the previous
+runtime across three saved observations was 0.000016 legacy units. Frozen
+camera features were finite and correctly shaped. Seventeen offline tests
+passed, including bounded/gated control, termination versus timeout shaping,
+synthetic SAC updates and save/load equivalence. The synthetic test is not
+chess training. Dependency checks also passed.
+
+### Run the pilot
+
+The initial September 20 GPU check failed before model inference. The NVIDIA
+kernel log reported `uvm encountered global fatal error 0x60` and
+`Node Reboot Required`. Rebooting restored CUDA: the GPU runtime check passed
+with maximum first-action difference of 0.00269 legacy units from the saved CPU
+reference. Live camera/control and Gym integration checks also passed.
+Require the CUDA runtime check above to pass before a new run.
+
+Start a single simulator in one terminal and wait for `FIRST_FRAMES`:
+
+```bash
+./run_cameras.sh --replay-episode outputs/replay/episode_000000.npz \
+  --joint-map calibration/legacy_blue_joint_map_physics.json \
+  --replay-mode physics --contacts --magnets --control --fps 30 \
+  --output outputs/control-residual
+```
+
+In another terminal, from this repository:
+
+```bash
+./run_rl_python.sh train_residual.py --output outputs/residual-pilot-new \
+  --steps 3000 --device cuda --seed 123 --eval-seeds 101 102 103
+```
+
+The output directory must be new. The script evaluates zero residual on three
+seeds, trains for 3,000 transitions with +/-0.5 mm pawn jitter, then evaluates
+deterministically on the same three seeds. Training uses a separate seed.
+Requested offsets match across evaluations; rendering and physics are not
+guaranteed bitwise identical. Keep other control clients disconnected.
+
+Outputs contain the configuration/checkpoint fingerprint, initial/latest/final
+SAC checkpoints, training traces and episode outcomes, evaluation traces and
+initial/final camera snapshots, and a comparison summary. ACT's weight hash is
+checked again at completion. This is a bring-up pilot: three evaluation seeds
+cannot establish reliability, and improvement must mean more completed moves,
+not merely higher shaping reward. The replay buffer is not saved for resume.
+
+Validate a completed run with:
+
+```bash
+./run_rl_python.sh verify_residual_pilot.py outputs/residual-pilot-new
+```
+
+The audit checks rewards, correction bounds, physical joint limits, frame/time
+continuity, paired reset offsets, terminal snapshots, finite saved weights,
+actual residual actor updates and the unchanged ACT checkpoint hash.
+
+The first live attempt (`outputs/residual-pilot`) stopped after 40 training
+transitions because nearest float32 rounding put a clipped gripper command
+0.000000015 degrees beyond its strict limit. `ChessEnv` now rounds action-space
+endpoints inward. Eighteen offline tests and the live physical-boundary check
+passed after this fix. That incomplete attempt remains separate from the
+restarted experiment at `outputs/residual-pilot-v2`.
+
+### Completed pilot results, 2026-09-20
+
+The restarted pilot completed 3,000 training transitions and 2,744 SAC gradient
+updates in 522.6 seconds (about 8.7 minutes). The ACT checkpoint stayed unchanged.
+
+| Evaluation seed | ACT alone | ACT + learned residual | Final learned placement error | Maximum learned lift |
+| --- | --- | --- | --- | --- |
+| 101 | Failed grasp | Success | 0.61 mm | 23.50 mm |
+| 102 | Failed grasp | Success | 0.62 mm | 25.19 mm |
+| 103 | Failed grasp | Success | 0.44 mm | 23.40 mm |
+
+All three learned evaluations returned home and passed stable release and
+neighbouring-piece checks. Exploration during training produced two successes
+among fifteen completed episodes; other outcomes were three failed grasps,
+nine neighbouring-piece disturbances and one wrong placement. Exploration
+outcomes should not be treated as the deterministic policy's success rate.
+
+`outputs/residual-pilot-v2/summary.json` contains the comparison, and
+`residual_final.zip` is the learned SAC checkpoint (used together with frozen
+ACT and the same feature/control wrappers). `integrity.json` records the
+passing audit of all 4,721 transitions: 3,000 training and 1,721 evaluation.
+The saved residual actor changed, its parameters are finite, both camera
+snapshots are valid, and the original ACT weight hash matches.
+
+This is encouraging preliminary evidence, not a reliability estimate or a
+sim-to-real result. In the interrupted first attempt, ACT succeeded on seed
+101; it failed on that same seed in the restarted baseline. Initial logged
+joints and pawn centre matched exactly, but initial camera images differed
+by about 0.59/0.80 intensity levels on average for laptop/phone. This establishes
+that resets do not reproduce identical image inputs; it does not isolate the
+cause of the different outcome. The diagnostic is saved alongside the results.
+
+Next, evaluate the frozen final checkpoint against ACT on a larger set of
+previously unused seeds, with repeated resets and interleaved controller order,
+before increasing training duration or widening the perturbations.

@@ -1,0 +1,18 @@
+# Install torch/torchvision from the cu128 index before this file.
+torch==2.7.1
+torchvision==0.22.1
+stable-baselines3==2.7.0
+numpy>=2.0,<2.3
+opencv-python-headless>=4.9,<4.14
+Pillow>=10,<13
+einops>=0.8,<0.9
+draccus==0.10.0
+huggingface-hub>=1,<2
+requests>=2.32,<3
+gymnasium>=1.1.1,<1.3
+safetensors>=0.4.3,<1
+packaging>=24.2,<26
+termcolor>=2.4,<4
+tqdm>=4.66,<5
+setuptools>=71,<81
+cmake>=3.29,<4.2

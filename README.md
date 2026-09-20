@@ -1,7 +1,9 @@
 # Chess simulation cameras
 
 The [RL bring-up guide](RL_APPROACH.md) covers the Gymnasium environment,
-ACT execution-window evaluation, reward checks and residual-controller interface.
+ACT execution-window evaluation, reward checks and the bounded residual SAC pilot.
+The learner has its own environment (`setup_rl_env.sh`, `run_rl_python.sh`);
+see the guide for validation results and launch commands.
 
 Launch the existing chess USD and stream both SO-100 wrist cameras:
 
