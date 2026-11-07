@@ -313,6 +313,7 @@ def main():
         while app.is_running() and (not args.frames or count < args.frames):
             frame_start = time.monotonic()
             command = None
+            timing_ms = {}
             if control and count:
                 try:
                     command = store.commands.get(timeout=0.05)
@@ -324,22 +325,31 @@ def main():
                         raise ValueError('Expired command')
                     if command['payload']['frame_id'] != store.frame_id:
                         raise ValueError('Stale frame_id; action was not applied')
+                    controlled = time.perf_counter()
                     if command['path'] == '/reset':
                         control.reset(command['payload'].get('options'))
                     else:
                         control.step(command['payload'].get('action'))
+                    timing_ms['server_physics_ms'] = (time.perf_counter()-controlled)*1000
                 except ValueError as error:
                     command.update(result={'error': str(error)}, status=409)
                     command['done'].set()
                     continue
             if replay and args.replay_loop and replay.index == len(replay.targets) - 1:
                 replay.index = -1
+            observed = time.perf_counter()
             replay_status = control.observe() if control else (replay.step() if replay else None)
+            timing_ms['server_observe_ms'] = (time.perf_counter()-observed)*1000
+            rendered = time.perf_counter()
             # Capture both products without advancing beyond the pose just set
             # by the replay (or the unchanged scene during camera bring-up).
             rep.orchestrator.step(rt_subframes=1, delta_time=0.0, pause_timeline=not (replay and args.replay_mode == "physics"))
+            timing_ms['server_render_ms'] = (time.perf_counter()-rendered)*1000
+            timing_ms['server_readback_ms'] = 0.
+            timing_ms['server_preview_jpeg_ms'] = 0.
             images, arrays = {}, {}
             for name, annotator in annotators.items():
+                readback = time.perf_counter()
                 raw = annotator.get_data()
                 if isinstance(raw, dict):
                     raw = raw.get("data")
@@ -350,9 +360,12 @@ def main():
                     continue
                 rgb = np.ascontiguousarray(rgba[..., :3])
                 arrays[name] = rgb
+                timing_ms['server_readback_ms'] += (time.perf_counter()-readback)*1000
+                encoded = time.perf_counter()
                 buffer = io.BytesIO()
                 Image.fromarray(rgb).save(buffer, format="JPEG", quality=90)
                 images[name] = buffer.getvalue()
+                timing_ms['server_preview_jpeg_ms'] += (time.perf_counter()-encoded)*1000
             count += 1
             if len(arrays) != len(annotators):
                 missing += 1
@@ -376,12 +389,15 @@ def main():
                      "pixel_std": {name: float(rgb.std()) for name, rgb in arrays.items()}}
             if replay_status:
                 stats["replay"] = replay_status
+            packaged = time.perf_counter()
             buffer = io.BytesIO()
             extras = {'observation_json': np.array(json.dumps(replay_status))} if control else {}
             np.savez(buffer, **arrays, frame_id=count - 1, simulation_time=simulation_time, **extras)
+            timing_ms['server_pair_pack_ms'] = (time.perf_counter()-packaged)*1000
+            stats['timing_ms'] = timing_ms
             store.publish(count - 1, images, buffer.getvalue(), stats)
             if command:
-                command['result'] = {'frame_id': count - 1, 'observation': replay_status}
+                command['result'] = {'frame_id': count - 1, 'observation': replay_status, 'timing_ms': timing_ms}
                 command['done'].set()
             if valid == 1:
                 for name, rgb in arrays.items():

@@ -67,6 +67,21 @@ class LegacyACT:
     def reset(self):
         self.policy.reset()
 
+    def pending_actions(self):
+        """Read the existing ACT cache in legacy units without advancing it."""
+        if self.config.get('temporal_ensemble_coeff') is not None:
+            raise ValueError('Cached timing control requires non-ensembled ACT')
+        queue = self.policy._action_queue
+        if not queue:
+            return np.empty((0, 6), np.float32)
+        with self.torch.inference_mode():
+            mean, std = self.action_stats
+            actions = self.torch.stack(tuple(queue))[:, 0] * std + mean
+        result = actions.cpu().numpy().copy()
+        if result.ndim != 2 or result.shape[1] != 6 or not np.isfinite(result).all():
+            raise ValueError('Invalid cached ACT actions')
+        return result
+
     def action(self, state, laptop_rgb, phone_rgb):
         torch = self.torch
         arrays = {'observation.state': np.asarray(state, np.float32),

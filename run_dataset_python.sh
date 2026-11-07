@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+unset PYTHONPATH PYTHONHOME PYTHONEXE LD_LIBRARY_PATH CUDA_HOME CONDA_PREFIX
+export PYTHONNOUSERSITE=1
+export PYTHONUNBUFFERED=1
+export HF_HUB_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export HF_HOME="$project_dir/outputs/.hf-dataset"
+export HF_DATASETS_CACHE="$project_dir/outputs/.hf-dataset/datasets"
+exec "$project_dir/.venv-dataset/bin/python" "$@"

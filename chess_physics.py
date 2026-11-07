@@ -41,7 +41,9 @@ def configure_contacts(stage, friction=1.0, piece_mass=0.005, board_friction=Non
         # the higher coefficient at the gripper fingers.
         PhysxSchema.PhysxMaterialAPI.Apply(board_material.GetPrim()).CreateFrictionCombineModeAttr('min')
         UsdShade.MaterialBindingAPI.Apply(board.GetPrim()).Bind(board_material, materialPurpose='physics')
+    from grasp_geometry import piece_grasp_target
     paths, centers, robot_colliders = [], [], {}
+    grasp_points = []
     cache = UsdGeom.XformCache()
     for color in ('blue', 'red'):
         group = stage.GetPrimAtPath('/World/chess_pieces_' + color)
@@ -51,6 +53,10 @@ def configure_contacts(stage, friction=1.0, piece_mass=0.005, board_friction=Non
                 continue
             center = bbox.ComputeWorldBound(prim).ComputeAlignedRange().GetMidpoint()
             matrix = cache.GetLocalToWorldTransform(prim)
+            bounds = bbox.ComputeWorldBound(prim).ComputeAlignedRange()
+            grasp = piece_grasp_target(str(prim.GetPath()), bounds.GetMin(), bounds.GetMax())
+            grasp_points.append((np.array(matrix.GetInverse().Transform(Gf.Vec3d(*map(float, grasp)))) *
+                                 np.array(Gf.Transform(matrix).GetScale())).tolist())
             # RigidPrim world poses omit scale; imported piece meshes use mm.
             centers.append((np.array(matrix.GetInverse().Transform(center)) *
                             np.array(Gf.Transform(matrix).GetScale())).tolist())
@@ -87,7 +93,9 @@ def configure_contacts(stage, friction=1.0, piece_mass=0.005, board_friction=Non
             prefix = str(root.GetPath()) + '/' + jaw + '/'
             if not any(path.startswith(prefix) for path in robot_colliders):
                 raise RuntimeError(f'Missing collision mesh for {color} {jaw}')
-    return paths, np.asarray(centers), {'piece_mass_kg': piece_mass, 'friction': friction,
+    return paths, np.asarray(centers), {'piece_grasp_local_m': grasp_points, 'piece_mass_kg': piece_mass, 'friction': friction,
+        'board_frame_bounds_m': [list(bbox.ComputeWorldBound(stage.GetPrimAtPath('/World/board_assembly')).ComputeAlignedRange().GetMin()),
+                                 list(bbox.ComputeWorldBound(stage.GetPrimAtPath('/World/board_assembly')).ComputeAlignedRange().GetMax())],
         'square_centers_m': [list(r.GetMidpoint()) for r in squares],
         'board_top_m': float(hi[2]), 'board_friction': friction if board_friction is None else board_friction,
         'piece_collision': 'convexHull',
@@ -96,17 +104,22 @@ def configure_contacts(stage, friction=1.0, piece_mass=0.005, board_friction=Non
 
 
 class PieceMonitor:
-    def __init__(self, view, paths, local_centers):
+    def __init__(self, view, paths, local_centers, local_grasp_points=None):
         self.view, self.paths, self.local_centers = view, paths, local_centers
+        self.local_grasp_points = local_grasp_points
         self.initial_poses = tuple(x.copy() for x in view.get_world_poses())
         self.initial_centers = self.centers()
         self.maximum_lift = np.zeros(len(paths))
+        self.active_index = paths.index('/World/chess_pieces_blue/pawn_03')
 
     def centers(self):
+        return self.world_points(self.local_centers)
+
+    def world_points(self, local_points):
         from pxr import Gf
         positions, rotations = self.view.get_world_poses()
         return np.array([np.asarray(Gf.Rotation(Gf.Quatd(float(q[0]), Gf.Vec3d(*map(float, q[1:])))).TransformDir(
-            Gf.Vec3d(*map(float, center)))) + pos for pos, q, center in zip(positions, rotations, self.local_centers)])
+            Gf.Vec3d(*map(float, center)))) + pos for pos, q, center in zip(positions, rotations, local_points)])
 
     def reset(self):
         self.view.set_world_poses(*self.initial_poses)
@@ -118,7 +131,7 @@ class PieceMonitor:
         if not np.isfinite(centers).all():
             raise RuntimeError('Non-finite piece pose')
         self.maximum_lift = np.maximum(self.maximum_lift, centers[:, 2] - self.initial_centers[:, 2])
-        index = self.paths.index('/World/chess_pieces_blue/pawn_03')
+        index = self.active_index
         target = self.initial_centers[index].copy()
         target[1] += 0.045
         from pxr import Gf
@@ -127,11 +140,16 @@ class PieceMonitor:
         def up(q):
             return np.array(Gf.Rotation(Gf.Quatd(float(q[0]), Gf.Vec3d(*map(float, q[1:])))).TransformDir(Gf.Vec3d(0, 0, 1)))
         upright = float(np.dot(up(rotation), up(initial_rotation)))
+        rotations = self.view.get_world_poses()[1]
+        uprights = [float(np.dot(up(q), up(q0))) for q, q0 in zip(rotations, self.initial_poses[1])]
         moved = np.linalg.norm(centers[:, :2] - self.initial_centers[:, :2], axis=1)
         moved[index] = 0
-        return {'pawn_center_m': centers[index].tolist(), 'pawn_lift_max_m': float(self.maximum_lift[index]),
+        grasp = {} if self.local_grasp_points is None else {
+            'piece_grasp_targets_m': self.world_points(self.local_grasp_points).tolist()}
+        return {**grasp, 'pawn_center_m': centers[index].tolist(), 'pawn_lift_max_m': float(self.maximum_lift[index]),
                 'pawn_target_xy_error_m': float(np.linalg.norm(centers[index, :2] - target[:2])),
                 'other_pieces_displaced_over_3mm': int((moved > 0.003).sum()),
                 'pawn_upright_cosine': upright,
                 'pawn_height_change_m': float(centers[index, 2] - self.initial_centers[index, 2]),
-                'piece_centers_m': centers.tolist(), 'piece_paths': self.paths}
+                'piece_centers_m': centers.tolist(), 'piece_paths': self.paths,
+                'piece_upright_cosines': uprights}

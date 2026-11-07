@@ -1,0 +1,343 @@
+{
+  "reference": {
+    "version": "finger_setback7mm_piece_heights_v1",
+    "local_point_m": [
+      0.0,
+      -0.07512724999999999,
+      0.0
+    ],
+    "finger_setback_m": 0.007,
+    "finger_reference": "zero_hinge_angle_front; fixed axial reference",
+    "piece_grasp_heights_m": {
+      "pawn": 0.017,
+      "knight": 0.017,
+      "rook": 0.019,
+      "bishop": 0.027,
+      "king": 0.032,
+      "queen": 0.03
+    }
+  },
+  "pieces": [
+    {
+      "path": "/World/chess_pieces_blue/bishop",
+      "bottom_m": 0.013650299908685602,
+      "target_m": [
+        0.03490979528552298,
+        -0.2676776295225729,
+        0.0406502999086856
+      ],
+      "height_above_bottom_mm": 27.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/bishop_01",
+      "bottom_m": 0.013650299908685602,
+      "target_m": [
+        -0.03495096569620564,
+        -0.2676776295225729,
+        0.0406502999086856
+      ],
+      "height_above_bottom_mm": 27.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/king",
+      "bottom_m": 0.013997686345511578,
+      "target_m": [
+        0.011941460616302836,
+        -0.26744785779968683,
+        0.04599768634551158
+      ],
+      "height_above_bottom_mm": 32.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/knight",
+      "bottom_m": 0.015007128097659354,
+      "target_m": [
+        0.05848365897648383,
+        -0.2676194155372183,
+        0.032007128097659356
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/knight_01",
+      "bottom_m": 0.015007128097659281,
+      "target_m": [
+        -0.054655995102447376,
+        -0.2676194155372183,
+        0.03200712809765928
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/pawn",
+      "bottom_m": 0.014366077730110506,
+      "target_m": [
+        0.07933211317864217,
+        -0.2439808876167111,
+        0.031366077730110506
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/pawn_01",
+      "bottom_m": 0.014492720361233526,
+      "target_m": [
+        0.05670922624980616,
+        -0.24398088761671338,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/pawn_02",
+      "bottom_m": 0.014492720361233526,
+      "target_m": [
+        0.0343183816475332,
+        -0.24398088761671338,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/pawn_03",
+      "bottom_m": 0.014492720361233526,
+      "target_m": [
+        0.012563983978304279,
+        -0.24398088761671338,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/pawn_04",
+      "bottom_m": 0.014492720361233526,
+      "target_m": [
+        -0.011013105214499136,
+        -0.24398088761671338,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/pawn_05",
+      "bottom_m": 0.014492720361233526,
+      "target_m": [
+        -0.03351195701583556,
+        -0.24398088761671338,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/pawn_06",
+      "bottom_m": 0.014492720361233526,
+      "target_m": [
+        -0.05423618678940162,
+        -0.24398088761671338,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/pawn_07",
+      "bottom_m": 0.014492720361233526,
+      "target_m": [
+        -0.07669953370437144,
+        -0.24398088761671338,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/queen",
+      "bottom_m": 0.014754879342629807,
+      "target_m": [
+        -0.00964351246028787,
+        -0.2678614984590023,
+        0.044754879342629804
+      ],
+      "height_above_bottom_mm": 30.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/rook",
+      "bottom_m": 0.01469902336828196,
+      "target_m": [
+        0.07946546071886096,
+        -0.2664584839940351,
+        0.03369902336828196
+      ],
+      "height_above_bottom_mm": 19.0
+    },
+    {
+      "path": "/World/chess_pieces_blue/rook_01",
+      "bottom_m": 0.014699023368281963,
+      "target_m": [
+        -0.07862133386513322,
+        -0.2664584839940334,
+        0.03369902336828196
+      ],
+      "height_above_bottom_mm": 19.0
+    },
+    {
+      "path": "/World/chess_pieces_red/bishop",
+      "bottom_m": 0.013650299908685602,
+      "target_m": [
+        -0.03406566842724014,
+        -0.10847168003192949,
+        0.0406502999086856
+      ],
+      "height_above_bottom_mm": 27.0
+    },
+    {
+      "path": "/World/chess_pieces_red/bishop_01",
+      "bottom_m": 0.013650299908685602,
+      "target_m": [
+        0.03579509255448848,
+        -0.10847168003192949,
+        0.0406502999086856
+      ],
+      "height_above_bottom_mm": 27.0
+    },
+    {
+      "path": "/World/chess_pieces_red/king",
+      "bottom_m": 0.013997686345511578,
+      "target_m": [
+        -0.011097333758019995,
+        -0.10870145175481555,
+        0.04599768634551158
+      ],
+      "height_above_bottom_mm": 32.0
+    },
+    {
+      "path": "/World/chess_pieces_red/knight",
+      "bottom_m": 0.015007128097659354,
+      "target_m": [
+        -0.057639532118201,
+        -0.10852989401728402,
+        0.032007128097659356
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_red/knight_01",
+      "bottom_m": 0.015007128097659281,
+      "target_m": [
+        0.05550012196073021,
+        -0.10852989401728402,
+        0.03200712809765928
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_red/pawn",
+      "bottom_m": 0.014366077730110508,
+      "target_m": [
+        -0.07848798632035933,
+        -0.13216842193779127,
+        0.031366077730110506
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_red/pawn_01",
+      "bottom_m": 0.014492720361233528,
+      "target_m": [
+        -0.05586509939152332,
+        -0.132168421937789,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_red/pawn_02",
+      "bottom_m": 0.014492720361233528,
+      "target_m": [
+        -0.03347425478925037,
+        -0.132168421937789,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_red/pawn_03",
+      "bottom_m": 0.014492720361233528,
+      "target_m": [
+        -0.011719857120021446,
+        -0.132168421937789,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_red/pawn_04",
+      "bottom_m": 0.014492720361233528,
+      "target_m": [
+        0.01185723207278197,
+        -0.132168421937789,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_red/pawn_05",
+      "bottom_m": 0.014492720361233528,
+      "target_m": [
+        0.0343560838741184,
+        -0.132168421937789,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_red/pawn_06",
+      "bottom_m": 0.014492720361233528,
+      "target_m": [
+        0.055080313647684453,
+        -0.132168421937789,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_red/pawn_07",
+      "bottom_m": 0.014492720361233528,
+      "target_m": [
+        0.07754366056265426,
+        -0.132168421937789,
+        0.03149272036123353
+      ],
+      "height_above_bottom_mm": 17.0
+    },
+    {
+      "path": "/World/chess_pieces_red/queen",
+      "bottom_m": 0.014754879342629807,
+      "target_m": [
+        0.010487639318570705,
+        -0.10828781109550008,
+        0.044754879342629804
+      ],
+      "height_above_bottom_mm": 30.0
+    },
+    {
+      "path": "/World/chess_pieces_red/rook",
+      "bottom_m": 0.014699023368281959,
+      "target_m": [
+        -0.07862133386057812,
+        -0.10969082556046734,
+        0.033699023368281955
+      ],
+      "height_above_bottom_mm": 19.0
+    },
+    {
+      "path": "/World/chess_pieces_red/rook_01",
+      "bottom_m": 0.014699023368281964,
+      "target_m": [
+        0.07946546072341605,
+        -0.10969082556046901,
+        0.03369902336828196
+      ],
+      "height_above_bottom_mm": 19.0
+    }
+  ],
+  "passed": true
+}

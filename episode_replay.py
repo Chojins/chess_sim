@@ -144,7 +144,7 @@ class PhysicsEpisodeReplay(EpisodeReplay):
         self.magnets = None
         if contact_data:
             from chess_physics import PieceMonitor
-            self.pieces = PieceMonitor(piece_view, contact_data[0], contact_data[1])
+            self.pieces = PieceMonitor(piece_view, contact_data[0], contact_data[1], contact_data[2]['piece_grasp_local_m'])
             if magnets is not None:
                 from board_magnets import BoardMagnets
                 self.magnets = BoardMagnets(stage, piece_view, contact_data[0], magnets)

@@ -15,18 +15,32 @@ def read_rows(path):
     return [json.loads(line) for line in path.read_text().splitlines()]
 
 
-def check_row(row, initial_state=None):
+def check_row(row, initial_state=None, previous_applied=None, residual_bounds=None, filter_config=None):
     raw = np.asarray(row['action'])
     applied = np.asarray(row['learning']['applied_residual'])
     assert raw.shape == applied.shape == (6,)
     assert np.isfinite(np.r_[raw, applied, row['state'], row['reward']]).all()
     assert np.all(np.abs(raw) <= 1.000001)
-    assert np.all(np.abs(applied) <= np.abs(raw) + 1e-6)
+    if row['learning'].get('residual_paused'):
+        assert (row.get('act_timing') or {}).get('capture_transport')
+        np.testing.assert_allclose(applied,previous_applied,atol=1e-7)
+    elif filter_config is not None:
+        assert np.all(np.abs(applied) <= 1.000001)
+        previous = np.zeros(6) if previous_applied is None else np.asarray(previous_applied)
+        change = filter_config['alpha'] * (raw * row['learning']['correction_gate'] - previous)
+        if filter_config['max_change_deg'] is not None:
+            rate = np.asarray(filter_config['max_change_deg']) / residual_bounds
+            change = np.clip(change, -rate, rate)
+            assert np.all(np.abs(applied - previous) * residual_bounds <= np.asarray(filter_config['max_change_deg']) + 1e-6)
+        np.testing.assert_allclose(applied, np.clip(previous + change, -1., 1.), atol=1e-6)
+    else:
+        assert np.all(np.abs(applied) <= np.abs(raw) + 1e-6)
     penalty = row['residual']['penalty']
     np.testing.assert_allclose(penalty, .01 * np.mean(applied ** 2), atol=1e-8)
     task_reward = sum(row['score']['reward_terms'].values())
     np.testing.assert_allclose(row['learning']['task_reward'], task_reward, atol=1e-7)
-    np.testing.assert_allclose(row['reward'], task_reward - penalty + row['learning']['shaping_reward'], atol=1e-6)
+    np.testing.assert_allclose(row['reward'], task_reward - penalty + row['learning']['shaping_reward'] +
+                              row['learning'].get('closing_alignment_penalty', 0.), atol=1e-6)
     if initial_state is not None:
         mapping = initial_state['joint_map']
         physical = np.array(mapping['sim_home_deg']) + np.array(mapping['scale']) * (

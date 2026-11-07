@@ -16,3 +16,4 @@ termcolor>=2.4,<4
 tqdm>=4.66,<5
 setuptools>=71,<81
 cmake>=3.29,<4.2
+chess==1.11.2

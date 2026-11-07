@@ -5,6 +5,26 @@ ACT execution-window evaluation, reward checks and the bounded residual SAC pilo
 The learner has its own environment (`setup_rl_env.sh`, `run_rl_python.sh`);
 see the guide for validation results and launch commands.
 
+## Current baseline and next direction
+
+The v29 hybrid controller completed 80/80 trials across four tested blue-robot
+opening moves. Its capture supervisor adds waypoint pauses and an intermediate
+home return. This establishes task completion for those cases; motion quality
+still needs improvement before large-scale collection for ACT training.
+
+See the [v29 baseline record](docs/baselines/v29.md) for the exact qualification
+report, recordings, model locations and scope. The next direction is a smoother,
+goal-conditioned teacher followed by RGB policy distillation. That training
+pipeline has not been implemented yet.
+
+Reusable simulation, training, evaluation and export tools remain at the project
+root. Superseded experiment launchers are in [scripts/legacy](scripts/legacy/README.md).
+They preserve the old experiments and are not the recommended next training run.
+Local recordings, checkpoints and Python environments are excluded from Git;
+committing this repository does not back them up.
+
+## Launch the camera server
+
 Launch the existing chess USD and stream both SO-100 wrist cameras:
 
 ```bash

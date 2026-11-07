@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from stable_baselines3 import SAC
 
-from residual_learning import LearningResidualEnv, approach_potential, grasp_gate
+from residual_learning import LearningResidualEnv, approach_potential, grasp_gate, reward_clearance
 from chess_env import ChessEnv
 from test_chess_env import FakeServer
 from train_residual import make_learner
@@ -32,6 +32,36 @@ class ToyEnv(gym.Env):
 
 
 class ResidualTests(unittest.TestCase):
+    def test_supervisor_preserves_actor_clock_and_residual_history(self):
+        class Policy:
+            config={'n_action_steps':100}
+            residual_paused=True
+            def reset(self):self.paused_steps=0
+            def action(self,state,*_):return state.copy()
+            def actor_clock(self,step,max_steps):
+                if self.residual_paused:self.paused_steps=step
+                return step-self.paused_steps,800
+        class Encoder:
+            output_dim=4
+            def __call__(self,obs):return np.zeros(4,np.float32)
+        server=FakeServer();server.meta['observation']['observation_state'][1]=-100.
+        server.meta['observation']['measured_joint_deg'][1]=100.
+        with patch('chess_env.PairedCameraClient',return_value=server),patch('chess_env.command',side_effect=server.command):
+            policy=Policy();env=LearningResidualEnv(ChessEnv(max_steps=1600),policy,encoder=Encoder(),residual_alpha=.25)
+            env.reset(seed=1);env.previous_action[:]=.2
+            with patch.object(env.unwrapped.task,'update',return_value=(0.,False,False,{})):
+                for sign in (1.,-1.):
+                    features,_,_,_,info=env.step(np.full(6,sign,np.float32))
+                    np.testing.assert_allclose(info['learning']['applied_residual'],.2)
+                    self.assertTrue(info['learning']['residual_paused'])
+                    self.assertEqual(features[-1],0.)
+                policy.residual_paused=False
+                features,_,_,_,info=env.step(np.zeros(6,np.float32))
+                np.testing.assert_allclose(info['learning']['applied_residual'],.15)
+                self.assertAlmostEqual(features[-1],1/800)
+                self.assertNotIn('residual_paused',info['learning'])
+            env.close()
+
     def test_wrapper_gating_and_episode_boundary_shaping(self):
         class Policy:
             config = {'n_action_steps': 100}
@@ -70,6 +100,18 @@ class ResidualTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         env.step(np.zeros(6, np.float32))
                     env.close()
+
+    def test_grasp_center_and_capture_target(self):
+        obs = {'task_geometry': {'source_index': 0, 'capture_index': 1},
+               'pieces': {'piece_centers_m': [[0, 0, 0], [0, .02, 0]]},
+               'gripper_grasp_center_m': [0, .005, 0],
+               'gripper_tip_proxy_m': [0, .05, 0]}
+        info = {'telemetry': {'observation': obs},
+                'score': {'phase': 'remove_captured', 'clearance_m': .9}}
+        self.assertAlmostEqual(reward_clearance(info), .015)
+        info['score']['phase'] = 'move_attacker'
+        self.assertAlmostEqual(reward_clearance(info), .005)
+        self.assertEqual(obs['gripper_tip_proxy_m'], [0, .05, 0])
 
     def test_gate_and_potential(self):
         self.assertEqual(grasp_gate([0, 18, 0, 0, 0, 0]), 0)

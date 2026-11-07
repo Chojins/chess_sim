@@ -1,0 +1,176 @@
+{
+  "passed": true,
+  "teacher_label": "learned",
+  "minimum_trials_per_task": 20,
+  "minimum_success_fraction_per_task": 0.9,
+  "capture_tested": true,
+  "ordinary_moves_tested": true,
+  "per_task": {
+    "scandinavian_capture": {
+      "trials": 20,
+      "distinct_seeds": 10,
+      "complete_move_successes": 20,
+      "success_fraction": 1.0,
+      "upright_training_quality_successes": 20,
+      "outcomes": {
+        "success": 20
+      },
+      "passed": true
+    },
+    "initial_e2e4": {
+      "trials": 20,
+      "distinct_seeds": 10,
+      "complete_move_successes": 20,
+      "success_fraction": 1.0,
+      "upright_training_quality_successes": 20,
+      "outcomes": {
+        "success": 20
+      },
+      "passed": true
+    },
+    "initial_d2d4": {
+      "trials": 20,
+      "distinct_seeds": 10,
+      "complete_move_successes": 20,
+      "success_fraction": 1.0,
+      "upright_training_quality_successes": 20,
+      "outcomes": {
+        "success": 20
+      },
+      "passed": true
+    },
+    "open_game_knight": {
+      "trials": 20,
+      "distinct_seeds": 10,
+      "complete_move_successes": 20,
+      "success_fraction": 1.0,
+      "upright_training_quality_successes": 20,
+      "outcomes": {
+        "success": 20
+      },
+      "passed": true
+    }
+  },
+  "scope": "Only tested blue-robot opening states and moves; not arbitrary boards, special moves or real hardware",
+  "note": "Repeated trials share seeds. Fractions are descriptive bring-up criteria, not independent-sample confidence guarantees.",
+  "deployment_profiles": [
+    {
+      "evaluation": "/home/jacob/Documents/chess_sim/outputs/hybrid-readiness-v29/capture_initial",
+      "task_ids": [
+        "scandinavian_capture"
+      ],
+      "pilot": "/home/jacob/Documents/chess_sim/outputs/capture-transport-profile-v29",
+      "checkpoint": "/home/jacob/Documents/chess_sim/outputs/capture-transport-profile-v29/source_actor.zip",
+      "checkpoint_sha256": "f3fde082605827c1386eab13117a1f906fe2a2f94fdcd71f6f63eaf7742383ff",
+      "residual_bounds_deg": [
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        6.0,
+        3.0
+      ],
+      "capture_transport": {
+        "config": {
+          "zone_min_xy_m": [
+            0.09954562245735499,
+            -0.26298882215314134
+          ],
+          "zone_max_xy_m": [
+            0.21954562245735498,
+            -0.11298882215314134
+          ],
+          "pickup_xy_m": [
+            -0.009654381469646423,
+            -0.17678882700200632
+          ],
+          "board_top_m": 0.014210491044997716,
+          "surface_z_m": 0.0,
+          "transit_z_m": 0.105,
+          "joint_step_deg": 0.8,
+          "closed_jaw_deg": -2.5,
+          "open_jaw_deg": 10.0,
+          "release_steps": 36,
+          "settle_steps": 10,
+          "settle_timeout": 100,
+          "actor_step_budget": 800,
+          "return_home": true,
+          "attacker_xy_m": [
+            0.01284561971772806,
+            -0.1992888203906089
+          ]
+        },
+        "code_sha256": "61336bc1605d75af075398a91a668f4afb1901686fb422aa1286f6d1f8fb2818",
+        "role": "explicit supervisor, separate from learned residual",
+        "control_inputs": "chess command, static board/RHS calibration and measured joints; no piece poses"
+      },
+      "capture_step_limit": 1600,
+      "actor_time_reference": "original 800-step budget, excluding supervisor steps; residual history paused during transport",
+      "residual_filter": {
+        "alpha": 0.25,
+        "max_change_deg": [
+          0.4,
+          0.4,
+          0.4,
+          0.4,
+          0.4,
+          0.6
+        ]
+      },
+      "live_timing": {
+        "config": {
+          "guard_all_closures": true,
+          "minimum_arm_adaptation_steps": 32,
+          "latch_after_adaptation": true,
+          "board_pickup_bounds_xy_m": [
+            -0.08840438315422473,
+            -0.27803882833367477,
+            0.09159562140230638,
+            -0.0980388190589405
+          ],
+          "alignment_open_jaw_deg": 10.0,
+          "suppress_board_release_closures": true,
+          "required_tabletop_releases": 1,
+          "confirm_settled_contact": true,
+          "minimum_lift_m": 0.005,
+          "maximum_approach_z_m": 0.12,
+          "open_jaw_deg": 4.0,
+          "close_command_deg": 1.0,
+          "arm_tolerance_deg": 0.8,
+          "arm_stable_frames": 3,
+          "maximum_arm_settle_steps": 90,
+          "minimum_closed_settle_steps": 12,
+          "maximum_closed_settle_steps": 45,
+          "closed_stable_frames": 5,
+          "maximum_interventions": 4
+        },
+        "kinematics_path": "/home/jacob/Documents/chess_sim/outputs/capture-supervised-kinematics-v10.json",
+        "kinematics_sha256": "b1988ceae1db6bf5b61ad93c930adf0ad9234741b1e205e93814a924c15242c8"
+      }
+    },
+    {
+      "evaluation": "/home/jacob/Documents/chess_sim/outputs/hybrid-readiness-v29/ordinary",
+      "task_ids": [
+        "initial_d2d4",
+        "initial_e2e4",
+        "open_game_knight"
+      ],
+      "pilot": "/home/jacob/Documents/chess_sim/outputs/opening-rl-capture-pickup-v6",
+      "checkpoint": "/home/jacob/Documents/chess_sim/outputs/opening-rl-capture-pickup-v6/residual_best.zip",
+      "checkpoint_sha256": "130340021874e8f00db223dfce7175745b1e8a9c18e7f8a49a97c9752c808c4a",
+      "residual_bounds_deg": [
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        3.0
+      ],
+      "capture_transport": null,
+      "capture_step_limit": 800,
+      "actor_time_reference": null,
+      "residual_filter": null,
+      "live_timing": null
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+# Additional dependencies for the separate dataset environment. It reads the
+# frozen RL environment through chess_shared.pth without modifying that env.
+datasets==4.8.5
+pyarrow==26.0.0
+av==15.1.0

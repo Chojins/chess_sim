@@ -5,6 +5,8 @@ Privileged simulator measurements are returned in info for scoring/critics.
 The caller owns the server. This is a single-client, partially observed env.
 """
 import json
+import time
+from dataclasses import asdict
 from pathlib import Path
 
 import gymnasium as gym
@@ -13,7 +15,7 @@ from gymnasium import spaces
 
 from act_client import command
 from camera_client import PairedCameraClient
-from chess_task import ChessTask, TaskConfig
+from chess_task import ChessTask, TaskConfig, LegalMoveTask
 from policy_overlay import highlight_move
 
 
@@ -55,14 +57,14 @@ class ChessEnv(gym.Env):
 
     def _observation(self):
         laptop = highlight_move(np.ascontiguousarray(self.images['red'][..., ::-1]),
-                                self.calibration, 'e2e4')[..., ::-1].copy()
+                                self.calibration, self.latest['observation']['task_geometry']['move'])[..., ::-1].copy()
         return {'state': np.asarray(self.latest['observation']['observation_state'], np.float32),
                 'laptop_rgb': laptop, 'phone_rgb': self.images['blue'].copy()}
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         options = {} if options is None else dict(options)
-        if set(options) - {'pawn_offset_mm'}:
+        if set(options) - {'pawn_offset_mm', 'history', 'move'}:
             raise ValueError('Unknown reset options')
         if 'pawn_offset_mm' not in options:
             options['pawn_offset_mm'] = self.np_random.uniform(-self.pawn_jitter_mm, self.pawn_jitter_mm, 2).tolist()
@@ -72,9 +74,11 @@ class ChessEnv(gym.Env):
         self.latest, self.images = self.client.read(color_order='rgb')
         if self.latest['frame_id'] != response['frame_id']:
             raise RuntimeError('Concurrent controller changed the reset observation')
-        self.task = ChessTask(self.latest['observation'], self.task_config)
+        task_type = LegalMoveTask if self.latest['observation']['task_geometry'].get('version') == 'legal_move_v1' else ChessTask
+        self.task = task_type(self.latest['observation'], self.task_config)
         self.needs_reset = False
-        return self._observation(), {'telemetry': self.latest, 'reset_options': options, 'task_version': self.task.version}
+        return self._observation(), {'telemetry': self.latest, 'reset_options': options,
+                                     'task_version': self.task.version, 'task_config': asdict(self.task_config)}
 
     def step(self, action):
         if self.needs_reset:
@@ -86,8 +90,11 @@ class ChessEnv(gym.Env):
         # A network/capture failure has uncertain execution state. Never retry
         # or manufacture a transition from the previous camera observation.
         self.needs_reset = True
+        command_started = time.perf_counter()
         response = command(self.url, '/step', before['frame_id'], action)
+        command_finished = time.perf_counter()
         latest, images = self.client.read(color_order='rgb')
+        frames_finished = time.perf_counter()
         if latest['frame_id'] != response['frame_id'] or latest['frame_id'] != before['frame_id'] + 1:
             raise RuntimeError('Concurrent controller or mismatched camera frame')
         if not np.isclose(latest['simulation_time'] - before['simulation_time'], 1 / 30, atol=1e-6):
@@ -96,7 +103,10 @@ class ChessEnv(gym.Env):
         reward, terminated, truncated, score = self.task.update(latest['observation'])
         self.needs_reset = terminated or truncated
         return self._observation(), reward, terminated, truncated, {
-            'telemetry': latest, 'score': score, 'task_version': self.task.version}
+            'telemetry': latest, 'score': score, 'task_version': self.task.version,
+            'timing_ms': {**response.get('timing_ms', {}),
+                          'client_command_ms': (command_finished-command_started)*1000,
+                          'client_frames_transfer_decode_ms': (frames_finished-command_finished)*1000}}
 
     def render(self):
         return np.concatenate([self.images['blue'], self.images['red']], axis=1).copy()
@@ -126,9 +136,10 @@ class ResidualACTEnv(gym.Wrapper):
     def _with_base(self, obs, terminal=False):
         self.base = np.zeros(6, np.float32) if terminal else self.policy.action(
             obs['state'], obs['laptop_rgb'], obs['phone_rgb'])
+        phase = getattr(self.policy, 'chunk_phase', self.steps % self.policy.config['n_action_steps'] /
+                        self.policy.config['n_action_steps'])
         return {**obs, 'base_action': self.base.copy(),
-                'chunk_phase': np.array([self.steps % self.policy.config['n_action_steps'] /
-                                          self.policy.config['n_action_steps']], np.float32)}
+                'chunk_phase': np.array([phase], np.float32)}
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
@@ -143,11 +154,29 @@ class ResidualACTEnv(gym.Wrapper):
         if not self.action_space.contains(residual):
             raise ValueError('Residual action must be within [-1, 1]')
         requested = self.base + residual * self.bounds / self.env.scale
-        executed = np.clip(requested, self.env.action_space.low, self.env.action_space.high).astype(np.float32)
+        constrained, timing = requested, None
+        if hasattr(self.policy, 'constrain_action'):
+            constrained, timing = self.policy.constrain_action(requested)
+        executed = np.clip(constrained, self.env.action_space.low, self.env.action_space.high).astype(np.float32)
         obs, reward, terminated, truncated, info = self.env.step(executed)
+        if hasattr(self.policy, 'observe_execution'):
+            readings = info['telemetry']['observation']
+            self.policy.observe_execution(requested, executed, readings['measured_joint_deg'],
+                                          readings['measured_finger_joint_deg'])
+            info['act_timing'] = timing
+            if self.policy.failure and not (terminated or truncated):
+                terminated = True
+                self.env.needs_reset, self.env.task.done = True, True
+                info['score'].update(success=False, reason=self.policy.failure)
+                info['act_timing']['failure'] = self.policy.failure
         self.steps += 1
         penalty = .01 * float(np.mean(residual ** 2))
         info['residual'] = {'requested_legacy': requested.tolist(), 'executed_legacy': executed.tolist(),
-                            'limited': bool(np.any((requested < self.env.action_space.low) |
-                                                   (requested > self.env.action_space.high))), 'penalty': penalty}
-        return self._with_base(obs, terminated), reward - penalty, terminated, truncated, info
+                            'limited': bool(np.any((constrained < self.env.action_space.low) |
+                                                   (constrained > self.env.action_space.high))), 'penalty': penalty}
+        if timing is not None:
+            info['residual']['timed_legacy'] = np.asarray(constrained).tolist()
+        base_started = time.perf_counter()
+        result = self._with_base(obs, terminated)
+        info.setdefault('timing_ms', {})['act_action_ms'] = (time.perf_counter()-base_started)*1000
+        return result, reward - penalty, terminated, truncated, info

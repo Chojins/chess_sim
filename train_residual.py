@@ -27,7 +27,10 @@ def transition_record(info):
     telemetry = info['telemetry']
     return {'frame_id': telemetry['frame_id'], 'simulation_time': telemetry['simulation_time'],
             'state': telemetry['observation']['observation_state'],
-            'score': info['score'], 'residual': info['residual'], 'learning': info['learning']}
+            'placement_telemetry': {key: telemetry['observation'].get(key) for key in
+                                    ('pieces', 'gripper_grasp_center_m', 'gripper_tip_proxy_m', 'measured_joint_deg', 'measured_finger_joint_deg', 'target_legacy_action')},
+            'score': info['score'], 'residual': info['residual'], 'learning': info['learning'],
+            **({'act_timing': info['act_timing']} if 'act_timing' in info else {})}
 
 
 def initialize_actor(model):
@@ -37,8 +40,8 @@ def initialize_actor(model):
     torch.nn.init.zeros_(head.bias)
 
 
-def make_learner(env, device, seed, buffer_size=10000):
-    model = SAC('MlpPolicy', env, device=device, seed=seed, learning_rate=1e-4,
+def make_learner(env, device, seed, buffer_size=10000, learner_class=SAC):
+    model = learner_class('MlpPolicy', env, device=device, seed=seed, learning_rate=1e-4,
                 buffer_size=buffer_size, learning_starts=256, batch_size=64,
                 gamma=.99, train_freq=1, gradient_steps=1, ent_coef='auto_0.01',
                 use_sde=True, sde_sample_freq=12, use_sde_at_warmup=True,
@@ -83,7 +86,8 @@ class TrainingLog(BaseCallback):
             self.stream.close()
 
 
-def evaluate(env, model, seeds, output, label):
+def evaluate(env, model, seeds, output, label, record_video=False, profile=False, collect_provenance=None,
+             record_learning_transitions=False):
     rows = []
     for seed in seeds:
         random.seed(seed)
@@ -95,18 +99,95 @@ def evaluate(env, model, seeds, output, label):
         (path / 'initial.json').write_text(json.dumps(initial, indent=2))
         np.savez_compressed(path / 'initial_images.npz', **env.unwrapped._observation())
         reward_sum, steps = 0., 0
-        with (path / 'steps.jsonl').open('w') as stream:
-            while True:
-                action = np.zeros(6, np.float32) if model is None else model.predict(obs, deterministic=True)[0]
-                obs, reward, terminated, truncated, info = env.step(action)
-                reward_sum += reward
-                steps += 1
-                stream.write(json.dumps({'step': steps, 'action': action.tolist(), 'reward': reward,
-                                         'terminated': terminated, 'truncated': truncated,
-                                         **transition_record(info)}) + '\n')
-                if terminated or truncated:
-                    break
+        video = None
+        collector, collection_error, info = None, None, None
+        if collect_provenance is not None:
+            from episode_collector import EpisodeCollector
+            actor_digest = None
+            if model is not None:
+                digest = hashlib.sha256()
+                for name, tensor in sorted(model.actor.state_dict().items()):
+                    digest.update(name.encode())
+                    digest.update(str(tensor.dtype).encode())
+                    digest.update(str(tuple(tensor.shape)).encode())
+                    digest.update(tensor.detach().cpu().contiguous().numpy().tobytes())
+                actor_digest = digest.hexdigest()
+            collector = EpisodeCollector(path / 'lossless_episode', initial,
+                                          {**collect_provenance, 'label': label, 'seed': seed,
+                                           'residual_actor_state_sha256': actor_digest,
+                                           'residual_mode': 'frozen actor' if model is not None else 'zero correction'})
+        if record_video:
+            from evaluation_video import EpisodeVideo
+            video = EpisodeVideo(path, env.unwrapped._observation())
+        measurements = []
+        learning_states, learning_actions, learning_rewards, learning_terminated, learning_truncated = [], [], [], [], []
+        if record_learning_transitions:
+            learning_states.append(np.asarray(obs, np.float32).copy())
+        try:
+            if video:
+                video.write(env.unwrapped._observation())
+            with (path / 'steps.jsonl').open('w') as stream:
+                while True:
+                    step_started = time.perf_counter()
+                    before_images = env.unwrapped._observation() if collector else None
+                    before_metadata = env.unwrapped.latest if collector else None
+                    action = np.zeros(6, np.float32) if model is None else model.predict(obs, deterministic=True)[0]
+                    predicted = time.perf_counter()
+                    obs, reward, terminated, truncated, info = env.step(action)
+                    stepped = time.perf_counter()
+                    if record_learning_transitions:
+                        learning_states.append(np.asarray(obs, np.float32).copy())
+                        learning_actions.append(np.asarray(action, np.float32).copy())
+                        learning_rewards.append(reward)
+                        learning_terminated.append(terminated)
+                        learning_truncated.append(truncated)
+                    if collector:
+                        collector.write(before_images, before_metadata, info)
+                    if video:
+                        video.write(env.unwrapped._observation())
+                    if profile:
+                        measurements.append({
+                            **info.get("timing_ms", {}),
+                            "actor_predict_ms": (predicted-step_started)*1000,
+                            "env_step_ms": (stepped-predicted)*1000,
+                            "video_frame_ms": (time.perf_counter()-stepped)*1000})
+                    reward_sum += reward
+                    steps += 1
+                    stream.write(json.dumps({'step': steps, 'action': action.tolist(), 'reward': reward,
+                                             'terminated': terminated, 'truncated': truncated,
+                                             **transition_record(info)}) + '\n')
+                    if terminated or truncated:
+                        break
+        except BaseException as error:
+            collection_error = repr(error)
+            raise
+        finally:
+            if video:
+                video.close()
+            if collector:
+                collection = collector.finalize(info['score'] if info else {}, error=collection_error)
         row = {'seed': seed, 'label': label, 'steps': steps, 'return': reward_sum, 'score': info['score']}
+        if record_learning_transitions:
+            if len(learning_states) != steps + 1 or not (learning_terminated[-1] or learning_truncated[-1]):
+                raise ValueError('Incomplete residual replay episode')
+            replay_path = path / 'learning_transitions.npz'
+            np.savez_compressed(replay_path, observations=np.asarray(learning_states, np.float32),
+                                actions=np.asarray(learning_actions, np.float32), rewards=np.asarray(learning_rewards, np.float32),
+                                terminated=np.asarray(learning_terminated, bool), truncated=np.asarray(learning_truncated, bool))
+            row['learning_transitions'] = {'path': replay_path.name, 'frames': steps,
+                                          'sha256': hashlib.sha256(replay_path.read_bytes()).hexdigest(),
+                                          'purpose': 'exact learner observations and raw bounded actions for matched-objective SAC replay; not ACT targets'}
+        if collector:
+            row['collection'] = {'path': 'lossless_episode', 'accepted_for_act_training': collection['accepted_for_act_training'],
+                                 'frames': collection['frames']}
+        if video:
+            row['video'] = video.verify()
+            assert row['video']['frames'] == steps + 1
+        if profile:
+            (path / 'timing_steps.json').write_text(json.dumps(measurements))
+            row['timing_ms'] = {key: {'mean': float(np.mean([m[key] for m in measurements if key in m])),
+                                     'p95': float(np.percentile([m[key] for m in measurements if key in m], 95))}
+                                for key in sorted({k for m in measurements for k in m})}
         rows.append(row)
         np.savez_compressed(path / 'terminal_images.npz', **env.unwrapped._observation())
         (path / 'result.json').write_text(json.dumps(row, indent=2))
