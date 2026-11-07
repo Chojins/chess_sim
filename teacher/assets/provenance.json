@@ -1,0 +1,10 @@
+{
+  "kinematics.json": {
+    "source": "outputs/capture-supervised-kinematics-v10.json",
+    "sha256": "b1988ceae1db6bf5b61ad93c930adf0ad9234741b1e205e93814a924c15242c8"
+  },
+  "finger_reference.json": {
+    "source": "outputs/grasp-pose-review-v18/reference.json",
+    "sha256": "abf68daecc4a7c3d2f0eba4533cbd16edfee76adea71e165f21eb066723ee4b0"
+  }
+}

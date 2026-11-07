@@ -1,0 +1,34 @@
+{
+  "anchors_jaw_local_m": [
+    [
+      -0.015782665065900585,
+      -0.050727250470876686,
+      4.0011923542132446e-08
+    ],
+    [
+      -0.015782658010721207,
+      -0.05072725047087674,
+      0.0
+    ]
+  ],
+  "grasp_reference": {
+    "version": "finger_setback7mm_piece_heights_v1",
+    "local_point_m": [
+      0.0,
+      -0.07512724999999999,
+      0.0
+    ],
+    "finger_setback_m": 0.007,
+    "finger_reference": "zero_hinge_angle_front; fixed axial reference",
+    "piece_grasp_heights_m": {
+      "pawn": 0.017,
+      "knight": 0.017,
+      "rook": 0.019,
+      "bishop": 0.027,
+      "king": 0.032,
+      "queen": 0.03
+    }
+  },
+  "usd_sha256": "6ab6ee774f7dc3600a17bf62959846efc97a628ce1970402772094378aa35be8",
+  "definition": "opposing mesh surfaces at 7 mm setback in zero-hinge geometry; midpoint follows both measured fingers"
+}

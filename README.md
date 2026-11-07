@@ -12,10 +12,21 @@ opening moves. Its capture supervisor adds waypoint pauses and an intermediate
 home return. This establishes task completion for those cases; motion quality
 still needs improvement before large-scale collection for ACT training.
 
-See the [v29 baseline record](docs/baselines/v29.md) for the exact qualification
-report, recordings, model locations and scope. The next direction is a smoother,
-goal-conditioned teacher followed by RGB policy distillation. That training
-pipeline has not been implemented yet.
+See the [v29 baseline record](docs/baselines/v29.md) for that controller's exact
+recordings, model locations and scope.
+
+The [standalone state teacher](teacher/README.md) now has a
+[qualified RL-fine-tuned checkpoint](docs/baselines/v65-neural-teacher.json):
+**20/20 fresh complete e2–e4 moves from home**, including pickup, placement,
+release and return. It runs one neural actor with generic Cartesian control.
+A local ACT pilot contains two accepted RL-teacher episodes, 1,149 lossless
+paired-camera/action frames, with an independently audited LeRobot export.
+
+This qualification covers the blue robot's ordinary e2–e4 on the current setup.
+RGB student distillation, other moves, captures and hardware transfer remain
+subsequent work. The original ACT is unchanged. See [current experiment notes](teacher/PROGRESS.md)
+for the evidence, negative results and collection commands. Local review videos
+are served on port 8090 when the review server is running.
 
 Reusable simulation, training, evaluation and export tools remain at the project
 root. Superseded experiment launchers are in [scripts/legacy](scripts/legacy/README.md).
