@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from review_grasp_geometry import opening_center
 from teacher.environment import ASSETS
-from teacher.move_teacher import MoveTask,MoveConfig
+from teacher.move_teacher import MoveConfig,task_type_for_objective
 
 
 def audit_trial(path,manifest):
@@ -22,9 +22,17 @@ def audit_trial(path,manifest):
     def point(o): return opening_center(spec,anchors,o['measured_joint_deg'],o['measured_finger_joint_deg']['jaw2_hinge'])
     mapping=actual['joint_map'];limits=np.asarray(actual['joint_limits_deg']);low,high=limits[:,0]+1e-4,limits[:,1]-1e-4
     command=np.clip(np.array(mapping['sim_home_deg'])+np.array(mapping['scale'])*(np.array(actual['target_legacy_action'])-mapping['legacy_home']),low,high)
-    task=MoveTask(context['baseline_observation'],actual,point(actual),command,context['provenance'],move)
+    if manifest['objective']=='ordinary_move':
+        from teacher.ordinary_moves import validate_case_geometry
+        validate_case_geometry(entry['case'],actual['task_geometry'])
+        if context['provenance']['case']!=entry['case']: raise ValueError('Checkpoint case changed')
+    task=task_type_for_objective(manifest['objective'])(context['baseline_observation'],actual,point(actual),command,context['provenance'],move)
     previous=task.potential(actual,point(actual),command);velocity=np.zeros(6);previous_time=actual['physics_time']
     rows=[json.loads(s) for s in (path/'steps.jsonl').read_text().splitlines()]
+    camera_reward=None
+    if manifest.get('camera_clearance_reward_contract') is not None:
+        from teacher.robot_clearance import ClearanceReward
+        camera_reward=ClearanceReward(manifest['camera_clearance_reward_contract'])
     for index,row in enumerate(rows):
         action=np.asarray(row['action'],np.float32)
         if action.shape!=(6,) or not np.isfinite(action).all() or np.max(np.abs(action))>1: raise ValueError('Invalid move action')
@@ -36,6 +44,9 @@ def audit_trial(path,manifest):
         if row['step']!=index+1 or actual['control_step']!=index+1: raise ValueError('Missing control step')
         np.testing.assert_allclose(actual['physics_time']-previous_time,1/30,atol=1e-6)
         terminal,terminated,truncated,score=task.update(actual,point(actual),target)
+        from teacher.robot_contacts import contact_terminal
+        terminal,terminated,truncated,score=contact_terminal(actual,manifest.get('terminate_on_robot_contact',False),terminal,terminated,truncated,score)
+        if terminated or truncated:task.done=True
         score['reset_family']=entry['family'];score['home_start']=entry['family']=='home'
         if score!=row['score'] or terminated!=row['terminated'] or truncated!=row['truncated']:
             raise ValueError('Unified outcome differs from raw physics')
@@ -46,10 +57,22 @@ def audit_trial(path,manifest):
         accel_cost=config['acceleration_weight']*float(np.mean((accel/180)**2))
         if config['acceleration_cost_cap'] is not None: accel_cost=min(accel_cost,config['acceleration_cost_cap'])
         cost=min(.003,accel_cost+config['velocity_weight']*float(np.mean((next_velocity/60)**2)))
-        np.testing.assert_allclose(row['reward'],terminal+shaping-.003-cost,atol=1e-5)
+        from teacher.robot_contacts import contact_costs,collision_cost
+        collision=collision_cost(actual,contact_costs(manifest.get('robot_contact_costs')))
+        camera=camera_reward.evaluate(actual) if camera_reward else None
+        if camera is not None:
+            for key in ('minimum_gap_m','cost'):
+                np.testing.assert_allclose(row['teacher']['camera_clearance_reward'][key],camera[key],atol=1e-9,rtol=0)
+            np.testing.assert_allclose(row['reward_components']['camera_clearance'],-camera['cost'],atol=1e-9,rtol=0)
+        np.testing.assert_allclose(row['reward'],terminal+shaping-.003-cost-collision-(camera['cost'] if camera else 0.),atol=1e-5)
         np.testing.assert_allclose(row['reward'],sum(row['reward_components'].values()),atol=1e-6)
         command,velocity,previous,previous_time=target,next_velocity,potential,actual['physics_time']
     result=json.loads((path/'result.json').read_text())
     if not rows or result['score']!=score: raise ValueError('Move summary differs from physics trace')
-    return {'path':str(path.resolve()),'steps':len(rows),'success':score['success'],'reset_family':entry['family'],
+    report={'path':str(path.resolve()),'steps':len(rows),'success':score['success'],'reset_family':entry['family'],
         'reason':score['reason'],'home_start':entry['family']=='home','complete_chess_move':score['complete_chess_move']}
+    if manifest['objective']=='ordinary_move': report['case']=entry['case']
+    from teacher.robot_contacts import audit_collision_trace
+    collision=audit_collision_trace(initial['telemetry']['observation'],rows)
+    if collision is not None: report['robot_collision_audit']=collision
+    return report

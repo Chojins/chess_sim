@@ -22,6 +22,8 @@ def main():
     parser.add_argument('--joint-map', type=Path, default=Path('calibration/legacy_blue_joint_map_physics.json'))
     parser.add_argument('--reset-bank',type=Path,help='Reuse a compatible checkpoint bank; defaults to OUTPUT/reset_bank')
     parser.add_argument('--render-cameras',action='store_true',help='Review only: attach both authored cameras and expose synchronized /frames.npz')
+    parser.add_argument('--robot-self-collisions',action='store_true',help='Experimental non-adjacent self-contact and robot-pair reports; use a new reset bank')
+    parser.add_argument('--robot-collision-geometry',choices=['hulls','decomposed'],default='hulls',help='Decompose printed housings and disable duplicate imported hulls; requires a new reset bank')
     parser.add_argument('--resolution',type=int,nargs=2,default=[640,480])
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
@@ -38,6 +40,7 @@ def main():
     app = SimulationApp(app_config)
     server = None
     camera_capture=None
+    robot_contacts=None
     try:
         import omni.usd
         import numpy as np
@@ -62,7 +65,11 @@ def main():
             if prim.IsA(UsdRender.Settings):
                 UsdRender.Settings(prim).GetProductsRel().SetTargets([])
         control = SimControl(stage, args.episode, args.joint_map, args.output,
-                             contacts=True, magnets=MagnetSettings(energy_j=.00056, board_friction=.12))
+                             contacts=True, magnets=MagnetSettings(energy_j=.00056, board_friction=.12),
+                             robot_self_collisions=args.robot_self_collisions,robot_collision_geometry=args.robot_collision_geometry)
+        if args.robot_self_collisions:
+            from teacher.robot_contacts import RobotContacts
+            robot_contacts=RobotContacts()
         # Match the baseline's 240 Hz physics and 30 Hz control contract.
         if not np.isclose(control.driver.fps, 30):
             raise RuntimeError('Teacher currently requires the 30 Hz source episode')
@@ -72,12 +79,15 @@ def main():
             robot=control.driver.robots['blue']
             observation['joint_velocity_deg_s']=np.rad2deg(robot.get_joint_velocities()[0][control.driver.indices]).tolist()
             observation['piece_velocities_m_s_rad_s']=control.driver.pieces.view.get_velocities().tolist()
+            if robot_contacts: observation['robot_contacts']=robot_contacts.snapshot()
             return observation
         manifest = dict(mode='state_teacher_camera_review' if args.render_cameras else 'state_only_teacher',
                         camera_render_products=2 if args.render_cameras else 0,
                         disabled_saved_products=disabled, usd=str(args.usd.resolve()),
                         joint_map=str(args.joint_map.resolve()), physics_hz=240, control_hz=30,
                         contacts=True, magnets=True, parallel_environments=1,
+                        robot_self_collisions=args.robot_self_collisions,
+                        robot_collision_geometry=args.robot_collision_geometry,
                         note=('Existing CPU physics backend; paired cameras for frozen-policy review'
                               if args.render_cameras else 'Existing CPU physics backend; no Replicator or policy camera rendering'))
         (args.output/'server_manifest.json').write_text(json.dumps(manifest, indent=2))
@@ -108,6 +118,7 @@ def main():
                     raise ValueError('Stale sequence; not applied')
                 if command['path'] == '/step' and fault:
                     raise ValueError('Previous execution uncertain; reset required')
+                if robot_contacts and command['path'] in ('/step','/reset','/restore_reset'): robot_contacts.clear()
                 if command['path'] == '/reset':
                     observation = control.reset(command['payload'].get('options'))
                     bank.set_baseline(observation)
@@ -139,6 +150,7 @@ def main():
             server.server_close()
         if camera_capture:
             camera_capture.close()
+        if robot_contacts: robot_contacts.close()
         app.close()
 
 

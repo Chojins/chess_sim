@@ -5,6 +5,7 @@ actor, with no oracle calls or trajectory/phase controller at runtime. Synthetic
 pose variants are supervised inputs only, never physical RL transitions.
 """
 import argparse
+import copy
 from dataclasses import asdict
 import json
 from pathlib import Path
@@ -16,9 +17,47 @@ from teacher.environment import ASSETS
 from teacher.grasp_checkpoints import ConservativeSAC, file_hash
 from teacher.imitation import StandardizedFeatures
 from teacher.kinematics import OpeningMidpoint
-from teacher.reactive_oracle import ReactiveOracle
+from teacher.reactive_oracle import ReactiveOracle,FlowConfig
 from teacher.task_space import CartesianConfig
 from teacher.train_grasp import save_status
+
+
+def fresh_warm_actor(parent,seed,gamma):
+    """Copy the learned actor, with newly initialized critics/replay/optimizer."""
+    model=ConservativeSAC('MlpPolicy',OfflineSpace(76),seed=seed,device='cpu',
+        learning_rate=.0001,gamma=gamma,buffer_size=30000,learning_starts=512,
+        batch_size=128,ent_coef=.002,policy_kwargs=copy.deepcopy(parent.policy_kwargs),verbose=0)
+    model.actor.load_state_dict(parent.actor.state_dict(),strict=True)
+    return model
+
+
+def relational_warm_actor(parent,inputs,seed,gamma):
+    from teacher.geometry_features import RelationalGeometryFeatures,relational_values
+    return geometry_warm_actor(parent,inputs,seed,gamma,RelationalGeometryFeatures,relational_values)
+
+
+def geometry_warm_actor(parent,inputs,seed,gamma,extractor,values_fn):
+    from teacher.geometry_features import GeometryFeatures,RelationalGeometryFeatures,PostureGeometryFeatures
+    if not isinstance(parent.actor.features_extractor,(GeometryFeatures,RelationalGeometryFeatures,PostureGeometryFeatures)):
+        raise ValueError('Relational warm-start requires the continuous geometry actor')
+    kwargs=copy.deepcopy(parent.policy_kwargs);values=values_fn(inputs)
+    mean=values.mean(0);scale=values.std(0).clamp(min=.15)
+    old=parent.actor.features_extractor;n=len(old.mean)
+    if n>len(mean): raise ValueError('Cannot discard warm actor geometry features')
+    mean[:n]=old.mean;scale[:n]=old.scale
+    kwargs.update(features_extractor_class=extractor,
+        features_extractor_kwargs={'mean':mean.tolist(),'scale':scale.tolist()})
+    model=ConservativeSAC('MlpPolicy',OfflineSpace(76),seed=seed,device='cpu',learning_rate=.0001,
+        gamma=gamma,buffer_size=30000,learning_starts=512,batch_size=128,ent_coef=.002,policy_kwargs=kwargs,verbose=0)
+    state=model.actor.state_dict()
+    for key,value in parent.actor.state_dict().items():
+        if key in ('features_extractor.mean','features_extractor.scale'): continue
+        if state[key].shape==value.shape: state[key]=value.clone()
+        elif key=='latent_pi.0.weight' and state[key].shape[0]==value.shape[0]:
+            state[key].zero_();state[key][:,:value.shape[1]]=value
+        else: raise ValueError(f'Cannot preserve warm actor layer {key}')
+    model.actor.load_state_dict(state,strict=True)
+    return model
 
 
 def load_training(paths):
@@ -33,26 +72,43 @@ def load_training(paths):
             if file_hash(meta['manifest'])!=meta['manifest_sha256']:
                 raise ValueError('Training source manifest changed')
             current=json.loads(Path(meta['manifest']).read_text())
+            from teacher.physics_contract import source_physics
+            physics=source_physics(current,meta['sources'])
+            if 'physics_settings' in meta and meta['physics_settings']!=physics: raise ValueError('Exported physics contract changed')
+            current={**current,'physics_settings':physics}
             if file_hash(current['bank'])!=current['bank_sha256']: raise ValueError('Reset bank changed')
             bank=json.loads(Path(current['bank']).read_text());entries={e['name']:e for e in bank['entries']}
             reserved_seeds.update(e['seed'] for e in bank['entries'] if e['split']!='train')
             for s in meta['sources']:
+                for filename,key in (('initial.json','initial_sha256'),('steps.jsonl','steps_sha256')):
+                    if key in s and file_hash(Path(s['path'])/filename)!=s[key]:raise ValueError('Physical training source changed')
                 e=entries[s['reset_name']]
                 if e['split']!='train' or e['seed']!=s['seed']: raise ValueError('Training episode membership differs from bank')
                 training_seeds.add(s['seed'])
             if current.get('policy_action_space')!='opening_xyz_pitch_roll_binary_jaw_v1':
                 raise ValueError('Oracle fitting requires the task-space action contract')
-            if manifest is not None and any(current[k]!=manifest[k] for k in
-                    ('case','action_config','move_config','observation_schema','joint_map','cartesian_config')):
+            contract=('action_config','move_config','observation_schema','joint_map','cartesian_config','physics_settings')
+            if manifest is not None and not (current.get('objective')==manifest.get('objective')=='ordinary_move'):
+                contract=('case',)+contract
+            if manifest is not None and any(current[k]!=manifest[k] for k in contract):
                 raise ValueError('Training contracts differ')
             manifest=current
             row={k:archive[k].copy() for k in keys}
+            if current.get('objective')=='ordinary_move' and 'episode_id' in archive:
+                row['goal_id']=np.array([meta['sources'][int(i)]['case']['id'] for i in archive['episode_id']])
+            else:
+                row['goal_id']=np.full(len(row['observation']),current.get('case',{}).get('id','single_goal'))
             if row['observation'].ndim!=2 or row['observation'].shape[1]!=76 or not np.isfinite(row['observation']).all():
                 raise ValueError('Invalid physical training inputs')
             arrays.append(row);sources.append({'path':str(path.resolve()),'sha256':file_hash(path),
                 'frames':len(row['observation']),'episodes':meta['sources']})
     if training_seeds & reserved_seeds: raise ValueError('Cross-bank training/evaluation seed leakage')
-    return {k:np.concatenate([a[k] for a in arrays]) for k in keys},sources,manifest
+    if manifest.get('objective')=='ordinary_move':
+        trained_goals={str(goal) for row in arrays for goal in np.unique(row['goal_id'])}
+        selected=[case for case in bank['cases'] if case['id'] in trained_goals]
+        if {case['id'] for case in selected}!=trained_goals:raise ValueError('Final reset bank must cover every aggregated training goal')
+        manifest={**manifest,'cases':selected,'case':selected[0]}
+    return {k:np.concatenate([a[k] for a in arrays]) for k in (*keys,'goal_id')},sources,manifest
 
 
 def main():
@@ -61,26 +117,34 @@ def main():
     p.add_argument('--updates',type=int,default=12000);p.add_argument('--seed',type=int,default=98001)
     p.add_argument('--noise-deg',type=float,default=.5)
     p.add_argument('--warm-actor',type=Path)
-    p.add_argument('--features',choices=['full','geometry'],default='full')
+    p.add_argument('--features',choices=['full','geometry','relational'],default='full')
+    p.add_argument('--augmentation-fraction',type=float,default=1.)
     args=p.parse_args()
-    if args.updates<1 or not np.isfinite(args.noise_deg) or args.noise_deg<0: p.error('Invalid fit budget/augmentation')
+    if args.updates<1 or not np.isfinite(args.noise_deg) or args.noise_deg<0 or not 0<=args.augmentation_fraction<=1:
+        p.error('Invalid fit budget/augmentation')
     data,sources,source=load_training(args.data)
     args.output.mkdir(parents=True,exist_ok=False);torch.set_num_threads(2);torch.manual_seed(args.seed)
     rng=np.random.default_rng(args.seed);x=torch.tensor(data['observation'],dtype=torch.float32)
-    auxiliary={k:torch.as_tensor(v) for k,v in data.items() if k not in ('observation','action')}
-    oracle=ReactiveOracle(CartesianConfig(**source['cartesian_config']))
+    auxiliary={k:torch.as_tensor(v) for k,v in data.items() if k not in ('observation','action','goal_id')}
+    goals,goal_index,goal_count=np.unique(data['goal_id'],return_inverse=True,return_counts=True)
+    probabilities=1/(len(goals)*goal_count[goal_index]) if len(goals)>1 else None
+    oracle=ReactiveOracle(CartesianConfig(**source['cartesian_config']),FlowConfig(**source.get('oracle_config',{})))
     y=torch.from_numpy(oracle.actions(x.numpy()))
     if args.warm_actor:
         parent=json.loads((args.warm_actor.parent/'manifest.json').read_text())
         if any(parent[k]!=source[k] for k in ('action_config','observation_schema','cartesian_config','joint_map')):
             raise ValueError('Warm actor contract differs')
-        model=ConservativeSAC.load(args.warm_actor,env=OfflineSpace(76),device='cpu')
-        for group in model.actor.optimizer.param_groups: group['lr']=.0001
+        parent_model=ConservativeSAC.load(args.warm_actor,device='cpu')
+        model=(relational_warm_actor(parent_model,x,args.seed,source['action_config']['gamma']) if args.features=='relational'
+            else fresh_warm_actor(parent_model,args.seed,source['action_config']['gamma']))
     else:
         extractor=StandardizedFeatures;features=x
         if args.features=='geometry':
             from teacher.geometry_features import GeometryFeatures,geometry_values
             extractor=GeometryFeatures;features=geometry_values(x)
+        if args.features=='relational':
+            from teacher.geometry_features import RelationalGeometryFeatures,relational_values
+            extractor=RelationalGeometryFeatures;features=relational_values(x)
         model=ConservativeSAC('MlpPolicy',OfflineSpace(76),seed=args.seed,device='cpu',
             learning_rate=.0003,gamma=source['action_config']['gamma'],buffer_size=30000,
             learning_starts=512,batch_size=128,ent_coef=.002,
@@ -92,7 +156,10 @@ def main():
         'runtime_oracle':False,'training_sources':sources,'oracle_config':asdict(oracle.config),
         'oracle_version':oracle.version,
         'bc_updates':args.updates,'seed':args.seed,'pose_noise_deg':args.noise_deg,
-        'actor_features':args.features if not args.warm_actor else 'inherited from warm actor',
+        'actor_features':args.features if not args.warm_actor or args.features=='relational' else 'inherited from warm actor',
+        'augmentation_fraction':args.augmentation_fraction,
+        'training_frames_by_goal':dict(zip(goals.tolist(),goal_count.tolist())),
+        'sampling':'uniform goals, then uniform physical states within each goal' if len(goals)>1 else 'uniform physical states',
         'warm_actor':str(args.warm_actor.resolve()) if args.warm_actor else None,
         'warm_actor_sha256':file_hash(args.warm_actor) if args.warm_actor else None,
         'training_enabled':True,'validation_used_for_gradients':False,'ready_for_act_collection':False,
@@ -112,11 +179,14 @@ def main():
                 'training_jaw_sign_accuracy':float(((prediction[:,5]>0)==(y[:,5]>0)).float().mean())}
             save_status(args.output/'status.json',**row);history.append(row);print('ORACLE_FIT',json.dumps(row),flush=True)
         if update==args.updates: break
-        ids=rng.integers(len(x),size=256);inputs=x[ids].clone()
+        ids=rng.choice(len(x),size=256,p=probabilities) if probabilities is not None else rng.integers(len(x),size=256)
+        inputs=x[ids].clone()
         if args.noise_deg:
             aux={k:v[ids] for k,v in auxiliary.items()}
             noise=torch.from_numpy(rng.normal(0,args.noise_deg,(len(ids),6)).astype(np.float32))
-            inputs,_=augment_cartesian(inputs,y[ids],aux,noise,midpoint,low,high,source['cartesian_config'])
+            augmented,_=augment_cartesian(inputs,y[ids],aux,noise,midpoint,low,high,source['cartesian_config'])
+            mask=torch.from_numpy(rng.random(len(ids))<args.augmentation_fraction)
+            inputs=torch.where(mask[:,None],augmented,inputs)
         labels=torch.from_numpy(oracle.actions(inputs.numpy()))
         prediction=model.actor(inputs,deterministic=True)
         logits=model.actor.get_action_dist_params(inputs)[0]

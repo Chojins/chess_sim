@@ -26,11 +26,12 @@ def save_status(path,**values):
     temporary.replace(path)
 
 
-def run_trial(env,policy,entry,seed,path,reference=None):
+def run_trial(env,policy,entry,seed,path,reference=None,capture=None):
     path.mkdir(parents=True,exist_ok=False)
     env.fixed_entry=entry
     obs,initial=env.reset(seed=seed)
     (path/'initial.json').write_text(json.dumps(initial,indent=2))
+    if capture is not None: capture(env.base.latest)
     result=None;step=0
     def advance(action,stream):
         nonlocal obs,result,step
@@ -40,9 +41,11 @@ def run_trial(env,policy,entry,seed,path,reference=None):
             'terminated':terminated,'truncated':truncated,'score':info['score'],
             'teacher':info['teacher'],'reward_components':info['reward_components'],
             'observation':info['telemetry']['observation']})+'\n')
+        if capture is not None: capture(env.base.latest)
         if terminated or truncated:
             result={'reset_name':entry['name'],'reset_family':entry.get('family','open_approach'),
                     'seed':seed,'steps':step,'score':info['score']}
+            if 'case' in entry: result['case']=entry['case']
         return result is not None
     with (path/'steps.jsonl').open('x') as stream:
         if reference is None:

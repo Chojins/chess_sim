@@ -11,6 +11,19 @@ from teacher.task_space import CartesianControl,CartesianConfig
 
 
 class CartesianAugmentationTests(unittest.TestCase):
+    def test_grasp_below_COM_preserves_positive_piece_uprightness(self):
+        class FixedPose:
+            def forward_pose(self,q,jaw2):
+                return torch.zeros((len(q),3)),torch.eye(3).repeat(len(q),1,1)
+        x=torch.zeros((1,76));x[:,17]=.5;x[:,41]=1;x[:,70]=-1
+        aux={'free_arm_before':torch.tensor([False]),'released_before':torch.tensor([False]),
+            'all_centers_m':torch.arange(96,dtype=torch.float32).reshape(1,32,3)/1000,
+            'all_upright':torch.ones((1,32)),'source_index':torch.tensor([0]),'home_joint_deg':torch.zeros((1,6))}
+        changed,_=augment_cartesian(x,torch.zeros((1,6)),aux,torch.zeros((1,6)),FixedPose(),
+            torch.full((6,),-180.),torch.full((6,),180.),asdict(CartesianConfig()))
+        self.assertEqual(float(changed[0,41]),1.)
+        torch.testing.assert_close(changed[0,68:71],torch.tensor([0.,0.,-1.]))
+
     def test_free_and_rigid_held_cases_keep_correct_geometry_and_next_pose(self):
         spec=json.loads((ASSETS/'kinematics.json').read_text());anchors=json.loads((ASSETS/'finger_reference.json').read_text())['anchors_jaw_local_m']
         midpoint=OpeningMidpoint(spec,anchors);q=torch.tensor([[-10.,90,-40,10,85,2.1]]).repeat(2,1)

@@ -61,12 +61,19 @@ def audit_episode(directory):
             or digest(manifest['checkpoint'])!=manifest['checkpoint_sha256']):
         raise ValueError('Frozen teacher provenance changed')
     report=audit_trial(directory,manifest)
+    from teacher.robot_clearance import append_clearance_audit
+    report=append_clearance_audit(directory,manifest,report)
     if not report['success'] or not report['home_start']: raise ValueError('Physics did not verify a full home-start move')
+    if report.get('robot_collision_audit',{}).get('contact_free') is False:
+        raise ValueError('Robot collision prevents accepting this new-physics episode')
+    if report.get('camera_clearance_audit',{}).get('passed') is False:
+        raise ValueError('Insufficient camera/servo clearance prevents accepting this episode')
     rows=[json.loads(s) for s in (directory/'steps.jsonl').read_text().splitlines()]
     frames=sorted((directory/'frames').glob('frame_*.npz'))
     if len(frames)!=len(rows) or record['frames']!=len(rows) or record['fps']!=30: raise ValueError('Incomplete lossless episode')
     previous=initial['telemetry'];hashes={}
-    calibration=manifest['camera_calibration'];move=manifest['case']['move']
+    case=initial['reset_context']['provenance'].get('case',manifest['case'])
+    calibration=manifest['camera_calibration'];move=case['move']
     for n,(path,row) in enumerate(zip(frames,rows)):
         if path.name!=f'frame_{n:06d}.npz': raise ValueError('Non-contiguous frame names')
         with np.load(path,allow_pickle=False) as f:
@@ -95,6 +102,9 @@ def audit_episode(directory):
     import chess
     import chess.svg
     board=chess.Board(goal['initial_fen']);selected=chess.Move.from_uci(move)
+    expected=chess.Board()
+    for previous_move in case['history']: expected.push_uci(previous_move)
+    if expected.fen()!=goal['initial_fen']: raise ValueError('Goal board differs from the requested history')
     if selected not in board.legal_moves: raise ValueError('Invalid goal move')
     board.push(selected)
     if board.fen()!=goal['desired_fen'] or chess.svg.board(board=board,lastmove=selected,orientation=chess.WHITE,size=480,coordinates=True)!=(directory/'desired_board.svg').read_text():

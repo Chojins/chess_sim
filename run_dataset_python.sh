@@ -8,4 +8,6 @@ export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 export HF_HOME="$project_dir/outputs/.hf-dataset"
 export HF_DATASETS_CACHE="$project_dir/outputs/.hf-dataset/datasets"
+export MPLCONFIGDIR="$project_dir/outputs/.matplotlib"
+mkdir -p "$MPLCONFIGDIR"
 exec "$project_dir/.venv-dataset/bin/python" "$@"

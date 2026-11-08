@@ -15,10 +15,22 @@ class FlowConfig:
     pawn_grasp_offset_m:float=.005
     grip_pitch_deg:float=65.
     grip_roll_deg:float=90.
+    funnel_inner_m:float=.003
+    funnel_outer_m:float=.015
+    close_xy_m:float=.0025
+    close_z_m:float=.0025
+    orientation_high_m:float=.130
+    orientation_low_m:float=.050
+    home_basin_m:float=.003
     def __post_init__(self):
         if not all(np.isfinite(v) for v in vars(self).values()) or min(
                 self.tau_s,self.carry_height_m,self.approach_height_m,self.pawn_grasp_offset_m)<=0:
             raise ValueError('Invalid geometric supervision configuration')
+        if not 0<self.funnel_inner_m<self.funnel_outer_m or min(self.close_xy_m,self.close_z_m)<=0:
+            raise ValueError('Invalid grasp approach tolerances')
+        if not 0<self.orientation_low_m<self.orientation_high_m:
+            raise ValueError('Invalid orientation transition heights')
+        if self.home_basin_m<=0: raise ValueError('Invalid released-piece return basin')
 
 
 def smoothstep(x):
@@ -29,6 +41,7 @@ class ReactiveOracle:
     version='geometry_feedback_v2_obstructed_closed_jaw'
     def __init__(self,cartesian_config,config=None):
         self.control=cartesian_config;self.config=config or FlowConfig()
+        if self.config!=FlowConfig(): self.version='geometry_feedback_v3_configured_approach'
     def actions(self,observations):
         x=np.atleast_2d(np.asarray(observations,dtype=float));c=self.config
         if x.ndim!=2 or x.shape[1]!=76 or not np.isfinite(x).all():
@@ -44,18 +57,19 @@ class ReactiveOracle:
         held=(cmd_jaw<-2.5)&(np.maximum(f1,f2)<3.5)&(f1>cmd_jaw+.8)&(f2>cmd_jaw+.8)&(np.linalg.norm(grasp,axis=1)<.012)
         empty=(np.maximum(f1,f2)<.5)&settled
         closing=np.where(np.abs(previous)>.1,previous<0,cmd_jaw<0)
-        aligned=(np.linalg.norm(grasp[:,:2],axis=1)<.0025)&(np.abs(grasp[:,2])<.0025)
+        aligned=(np.linalg.norm(grasp[:,:2],axis=1)<c.close_xy_m)&(np.abs(grasp[:,2])<c.close_z_m)
         open_enough=np.minimum(f1,f2)>4.8
         placed=(np.linalg.norm(goal[:,:2],axis=1)<.003)&(np.abs(height)<.003)
+        placed|=(np.linalg.norm(goal[:,:2],axis=1)<c.home_basin_m)&(np.abs(height)<.003)&(np.minimum(f1,f2)>=4.)
         pheight=height+c.pawn_grasp_offset_m*x[:,70]-grasp[:,2]
         home_pitch=q[:,1:4].sum(1)+x[:,74]*90;home_roll=q[:,4]+x[:,75]*90
-        low=smoothstep((.130-pheight)/(.130-.050))
+        low=smoothstep((c.orientation_high_m-pheight)/(c.orientation_high_m-c.orientation_low_m))
         pitch=home_pitch+(c.grip_pitch_deg-home_pitch)*low
         roll=home_roll+(c.grip_roll_deg-home_roll)*low
         error=np.zeros((len(x),3));jaw=np.ones(len(x))
         # Empty-hand reach: descend through a spatial funnel after XY alignment.
         lateral=np.linalg.norm(grasp[:,:2],axis=1)
-        approach=c.approach_height_m*smoothstep((lateral-.003)/(.015-.003))
+        approach=c.approach_height_m*smoothstep((lateral-c.funnel_inner_m)/(c.funnel_outer_m-c.funnel_inner_m))
         error[:,:2]=grasp[:,:2];error[:,2]=grasp[:,2]+approach
         close=(aligned&open_enough)|(closing&~empty&(np.linalg.norm(grasp,axis=1)<.015))
         jaw[close]=-1;error[close]=grasp[close]

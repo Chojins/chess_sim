@@ -14,7 +14,7 @@ from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.monitor import Monitor
 
-from teacher.grasp_checkpoints import ConservativeSAC,GraspCheckpoints,GraspSelection,file_hash
+from teacher.grasp_checkpoints import ConservativeSAC,GraspCheckpoints,GraspSelection,file_hash,policy_success
 from teacher.near_grasp import NearGraspEnv,LiftConfig
 from teacher.train_grasp import GraspProgress,evaluate_bank,save_status
 from teacher.verify_grasp import audit_trial
@@ -34,7 +34,7 @@ def family_counts(rows):
     counts={}
     for row in rows:
         group=counts.setdefault(row['reset_family'],{'successes':0,'trials':0})
-        group['trials']+=1;group['successes']+=bool(row['score']['success'])
+        group['trials']+=1;group['successes']+=policy_success(row)
     return counts
 
 

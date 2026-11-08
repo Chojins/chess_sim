@@ -2,7 +2,8 @@
 import numpy as np
 
 
-def configure_contacts(stage, friction=1.0, piece_mass=0.005, board_friction=None):
+def configure_contacts(stage, friction=1.0, piece_mass=0.005, board_friction=None, robot_self_collisions=False, robot_collision_geometry='hulls'):
+    if robot_collision_geometry not in ('hulls','decomposed'): raise ValueError('Unknown robot collision geometry')
     from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade, PhysxSchema
     material = UsdShade.Material.Define(stage, "/World/ChessContactMaterial")
     properties = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
@@ -43,6 +44,8 @@ def configure_contacts(stage, friction=1.0, piece_mass=0.005, board_friction=Non
         UsdShade.MaterialBindingAPI.Apply(board.GetPrim()).Bind(board_material, materialPurpose='physics')
     from grasp_geometry import piece_grasp_target
     paths, centers, robot_colliders = [], [], {}
+    self_filters = []
+    disabled_duplicates=[]
     grasp_points = []
     cache = UsdGeom.XformCache()
     for color in ('blue', 'red'):
@@ -77,30 +80,70 @@ def configure_contacts(stage, friction=1.0, piece_mass=0.005, board_friction=Non
         # cannot receive per-instance collision opinions. Expand only the
         # robot visuals in the session layer before adding colliders.
         while True:
-            instances = [p for p in Usd.PrimRange(root) if p.IsInstance() and '/visuals' in str(p.GetPath())]
+            instances = [p for p in Usd.PrimRange(root) if p.IsInstance() and (
+                '/visuals' in str(p.GetPath()) or (robot_collision_geometry=='decomposed' and '/collisions' in str(p.GetPath())))]
             if not instances:
                 break
             for prim in instances:
                 prim.SetInstanceable(False)
         # Coarse housing hulls and meshing jaw gears overlap internally. Keep
         # external contacts enabled; self-contact needs dedicated CAD colliders.
-        PhysxSchema.PhysxArticulationAPI.Apply(stage.GetPrimAtPath(str(root.GetPath()) + '/root_joint')).CreateEnabledSelfCollisionsAttr(False)
+        PhysxSchema.PhysxArticulationAPI.Apply(stage.GetPrimAtPath(str(root.GetPath()) + '/root_joint')).CreateEnabledSelfCollisionsAttr(robot_self_collisions)
+        if robot_self_collisions:
+            # Exclude mechanically connected neighbours and the two meshing
+            # jaw gears. Non-adjacent housing pairs remain collidable, including
+            # gripper/camera housing against the shoulder's joint-2 servo.
+            pairs=[]
+            for joint in Usd.PrimRange(root):
+                if not joint.IsA(UsdPhysics.Joint): continue
+                a=UsdPhysics.Joint(joint).GetBody0Rel().GetTargets()
+                b=UsdPhysics.Joint(joint).GetBody1Rel().GetTargets()
+                if len(a)==len(b)==1: pairs.append((a[0],b[0]))
+            pairs.append((root.GetPath().AppendChild('jaw_1'),root.GetPath().AppendChild('jaw_2')))
+            for a,b in pairs:
+                UsdPhysics.FilteredPairsAPI.Apply(stage.GetPrimAtPath(a)).CreateFilteredPairsRel().AddTarget(b)
+                self_filters.append([str(a),str(b)])
+            for body in Usd.PrimRange(root):
+                if body.HasAPI(UsdPhysics.RigidBodyAPI):
+                    PhysxSchema.PhysxContactReportAPI.Apply(body).CreateThresholdAttr(0.)
         for prim in Usd.PrimRange(root):
             if prim.IsA(UsdGeom.Mesh) and '/visuals/' in str(prim.GetPath()):
-                collider(prim, 'convexDecomposition' if '/jaw_' in str(prim.GetPath()) else 'convexHull')
-                robot_colliders[str(prim.GetPath())] = 'convexDecomposition' if '/jaw_' in str(prim.GetPath()) else 'convexHull'
+                printed_housing=robot_collision_geometry=='decomposed' and '_Motor/' not in str(prim.GetPath())
+                approximation='convexDecomposition' if '/jaw_' in str(prim.GetPath()) or printed_housing else 'convexHull'
+                collider(prim,approximation)
+                robot_colliders[str(prim.GetPath())]=approximation
+        if robot_collision_geometry=='decomposed':
+            # The imported arm already has duplicate housing colliders. A coarse
+            # original hull would fill the voids in a decomposed replacement.
+            for prim in Usd.PrimRange(root):
+                path=str(prim.GetPath())
+                if not prim.IsA(UsdGeom.Mesh) or '/collisions/' not in path: continue
+                replacement=path.replace('/collisions/','/visuals/')
+                if replacement not in robot_colliders:
+                    raise ValueError(f'No visual collision replacement for {path}')
+                UsdPhysics.CollisionAPI.Apply(prim).CreateCollisionEnabledAttr(False)
+                disabled_duplicates.append({'disabled':path,'replacement':replacement})
         for jaw in ('jaw_1', 'jaw_2'):
             prefix = str(root.GetPath()) + '/' + jaw + '/'
             if not any(path.startswith(prefix) for path in robot_colliders):
                 raise RuntimeError(f'Missing collision mesh for {color} {jaw}')
-    return paths, np.asarray(centers), {'piece_grasp_local_m': grasp_points, 'piece_mass_kg': piece_mass, 'friction': friction,
+    result={'piece_grasp_local_m': grasp_points, 'piece_mass_kg': piece_mass, 'friction': friction,
         'board_frame_bounds_m': [list(bbox.ComputeWorldBound(stage.GetPrimAtPath('/World/board_assembly')).ComputeAlignedRange().GetMin()),
                                  list(bbox.ComputeWorldBound(stage.GetPrimAtPath('/World/board_assembly')).ComputeAlignedRange().GetMax())],
         'square_centers_m': [list(r.GetMidpoint()) for r in squares],
         'board_top_m': float(hi[2]), 'board_friction': friction if board_friction is None else board_friction,
         'piece_collision': 'convexHull',
         'jaw_collision': 'convexDecomposition', 'contact_offset_m': 0.0005,
-        'robot_self_collisions': False, 'robot_collision_meshes': robot_colliders}
+        'robot_self_collisions': robot_self_collisions, 'robot_collision_meshes': robot_colliders}
+    if robot_self_collisions:
+        result.update(robot_self_collision_mode='non_adjacent_with_meshing_jaw_pair_excluded_v1',
+            robot_self_collision_filtered_pairs=self_filters,robot_contact_reporting=True,
+            collision_geometry_scope='Existing housing convex hulls; experimental conservative self-contact, not calibrated clearance')
+    if robot_collision_geometry=='decomposed':
+        result.update(robot_collision_geometry='decomposed_printed_housings_deduplicated_v1',
+            disabled_duplicate_robot_colliders=disabled_duplicates,
+            collision_geometry_scope='Convex-decomposed printed housings/jaws, convex servo hulls; imported duplicate hulls disabled')
+    return paths, np.asarray(centers), result
 
 
 class PieceMonitor:

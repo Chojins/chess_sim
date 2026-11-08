@@ -116,9 +116,11 @@ class EpisodeReplay:
 
 class PhysicsEpisodeReplay(EpisodeReplay):
     """Drive joint position targets with PhysX; gains are bring-up settings."""
-    def __init__(self, stage, episode, mapping, output, source="states", contacts=False, speed=1.0, gripper_stiffness=2.0, friction=1.0, magnets=None):
+    def __init__(self, stage, episode, mapping, output, source="states", contacts=False, speed=1.0, gripper_stiffness=2.0, friction=1.0, magnets=None, robot_self_collisions=False, robot_collision_geometry='hulls'):
         if magnets is not None and not contacts:
             raise ValueError('Magnets require piece contacts')
+        if robot_self_collisions and not contacts:
+            raise ValueError('Robot self-collision audit requires contact geometry')
         super().__init__(stage, episode, mapping, output, source, kinematic=False)
         from isaacsim.core.api import World
         from isaacsim.core.prims import Articulation, RigidPrim
@@ -127,7 +129,8 @@ class PhysicsEpisodeReplay(EpisodeReplay):
         if contacts:
             from chess_physics import configure_contacts
             contact_data = configure_contacts(stage, friction=friction,
-                                              board_friction=magnets.board_friction if magnets else None)
+                                              board_friction=magnets.board_friction if magnets else None,
+                                              robot_self_collisions=robot_self_collisions,robot_collision_geometry=robot_collision_geometry)
         self.world = World(physics_dt=1 / (self.fps * 8), rendering_dt=1 / self.fps,
                            stage_units_in_meters=1.0, backend="numpy", device="cpu")
         self.robots = {}

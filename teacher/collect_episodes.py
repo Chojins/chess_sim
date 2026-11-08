@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import numpy as np
 import torch
+import chess
 from camera_client import PairedCameraClient
 from evaluation_video import EpisodeVideo
 from teacher.episode_data import TeacherFrames,audit_episode,digest
@@ -27,6 +28,11 @@ def qualification(source):
             or digest(source/'frozen_actor.zip')!=status['checkpoint_sha256']
             or manifest['checkpoint_sha256']!=status['checkpoint_sha256']):
         raise ValueError('Need a passing, immutable >=20-trial home qualification')
+    if manifest['objective']=='ordinary_move':
+        for case in manifest['cases']:
+            row=status.get('per_case',{}).get(case['id'],{})
+            if not row.get('passed') or row.get('trials',0)<5:
+                raise ValueError('Each ordinary goal needs a passing >=5-trial pilot qualification')
     return status,manifest
 
 
@@ -39,6 +45,10 @@ def main():
     review=json.loads((args.motion_review/'results.json').read_text())
     if review['checkpoint_sha256']!=status['checkpoint_sha256'] or review['home_start_successes']<1:
         raise ValueError('Need a successful matched-camera home review of this exact actor')
+    cases=source.get('cases',[source['case']]) if source['objective']=='ordinary_move' else [source['case']]
+    if source['objective']=='ordinary_move':
+        reviewed={r['case']['id'] for r in review['results'] if r['score']['success'] and r['reset_family']=='home'}
+        if not {c['id'] for c in cases}.issubset(reviewed): raise ValueError('Camera review must cover every ordinary goal')
     used=set(source['qualification_seeds'])
     for key in ('bank','source_development_bank'):
         if key in source:
@@ -53,15 +63,15 @@ def main():
     client=StateClient(args.url);env=None;entries=[];accepted=[];results=[]
     try:
         save_status(args.output/'status.json',stage='building_collection_home_starts')
-        for seed in args.seeds:
+        for case,seed in ((c,s) for c in cases for s in args.seeds):
             offset=np.random.default_rng(seed).uniform(-source['pawn_jitter_mm'],source['pawn_jitter_mm'],2)
-            client.reset({'history':[],'move':'e2e4','pawn_offset_mm':offset.tolist()})
-            history={'seed':seed,'split':'train','family':'home','held_start':False,'move':'e2e4',
+            client.reset({'history':case['history'],'move':case['move'],'pawn_offset_mm':offset.tolist()})
+            history={'seed':seed,'split':'train','family':'home','held_start':False,'move':case['move'],'case':case,
                 'prior_lift_verified':False,'prior_max_lift_m':0.,'prior_release_verified':False,'release_intent':None,
                 'pawn_offset_mm':offset.tolist(),'collection_checkpoint_sha256':status['checkpoint_sha256']}
-            saved=client.save_reset(f'collect_{args.output.name}_{seed}',history)['reset_context']
+            saved=client.save_reset(f'collect_{args.output.name}_{case["id"]}_{seed}',history)['reset_context']
             entries.append({**saved,**history,'horizon':source['move_config']['horizon']})
-        bank=args.output/'home_reset_bank.json';bank.write_text(json.dumps({'case':source['case'],'entries':entries},indent=2))
+        bank=args.output/'home_reset_bank.json';bank.write_text(json.dumps({'case':source['case'],'cases':cases,'entries':entries},indent=2))
         calibration=json.loads(Path('calibration/sim_board.json').read_text())['cameras']['red']
         manifest={**source,'bank':str(bank.resolve()),'bank_sha256':digest(bank),
             'mode':'frozen_neural_teacher_ACT_pilot','teacher_label':'neural_actor','learned_policy':True,
@@ -69,16 +79,18 @@ def main():
             'qualification':str(args.qualification.resolve()),'qualification_status_sha256':digest(args.qualification/'status.json'),
             'motion_review':str(args.motion_review.resolve()),'motion_review_results_sha256':digest(args.motion_review/'results.json'),
             'runtime_oracle':False,'oracle_interventions':0,'training_enabled':False,'collection_seeds':args.seeds,
-            'ready_for_act_collection':True,'collection_readiness_scope':'Small blue e2e4 pilot on the qualified setup only',
+            'ready_for_act_collection':True,'collection_readiness_scope':'Listed qualified blue ordinary goals on this setup only',
             'collection_source_hashes':{str(path):digest(path) for path in Path('teacher').glob('*.py')},
             'camera_calibration':calibration,'camera_calibration_sha256':digest('calibration/sim_board.json'),
-            'uploaded':False,'rgb_student':False,'scope':'Blue ordinary e2e4 only; pilot data, no broader move generalization claim'}
+            'uploaded':False,'rgb_student':False,'scope':'Listed blue ordinary goals only; no broader move generalization claim'}
         (args.output/'manifest.json').write_text(json.dumps(manifest,indent=2))
         env,audit=make_env(manifest,args.url,'train');model=ConservativeSAC.load(frozen,device='cpu')
         camera=PairedCameraClient(args.url,timeout=30)
         for entry in entries:
             directory=args.output/entry['name'];directory.mkdir();env.fixed_entry=entry
-            goal=save_goal(directory,'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1','e2e4')
+            case=entry['case'];board=chess.Board()
+            for move in case['history']: board.push_uci(move)
+            goal=save_goal(directory,board.fen(),case['move'])
             obs,initial=env.reset(seed=entry['seed']);(directory/'initial.json').write_text(json.dumps(initial,indent=2))
             frames=TeacherFrames(directory/'frames');rows=[]
             save_status(args.output/'status.json',stage='collecting_neural_ACT_pilot',completed=len(results),seed=entry['seed'])
@@ -86,17 +98,19 @@ def main():
                 while True:
                     before=env.base.latest;images=matched_images(camera,before)
                     action,_=model.predict(obs,deterministic=True);obs,reward,done,truncated,info=env.step(action)
-                    frames.write(images,before,info,calibration,manifest['case']['move'])
+                    frames.write(images,before,info,calibration,case['move'])
                     row={'step':len(rows)+1,'action':action.tolist(),'reward':reward,'terminated':done,'truncated':truncated,
                         'score':info['score'],'teacher':info['teacher'],'reward_components':info['reward_components'],
                         'observation':info['telemetry']['observation'],'sequence':info['telemetry']['sequence'],
                         'simulation_time':info['telemetry']['simulation_time']}
                     stream.write(json.dumps(row)+'\n');rows.append(row)
                     if done or truncated: break
-            result={'reset_name':entry['name'],'reset_family':'home','seed':entry['seed'],'steps':len(rows),'score':rows[-1]['score']}
-            (directory/'result.json').write_text(json.dumps(result,indent=2));audit(directory,manifest)
+            result={'reset_name':entry['name'],'reset_family':'home','seed':entry['seed'],'steps':len(rows),'score':rows[-1]['score'],'case':case}
+            (directory/'result.json').write_text(json.dumps(result,indent=2));checked=audit(directory,manifest)
+            contact_free=checked.get('robot_collision_audit',{}).get('contact_free',True)
+            contact_free&=checked.get('camera_clearance_audit',{}).get('passed',True)
             episode={'format':'chess_sim_neural_teacher_episode_v1','fps':30,'frames':frames.frames,'score':result['score'],
-                'accepted_for_act_training':bool(result['score']['success']),'provenance':{
+                'accepted_for_act_training':bool(result['score']['success'] and contact_free),'provenance':{
                     'teacher_checkpoint_sha256':digest(frozen),'calibration':source['joint_map'],
                     'qualification_status_sha256':manifest['qualification_status_sha256'],
                     'action_units':'unchanged source legacy joint units; executed physical targets',
@@ -125,13 +139,13 @@ def main():
         (args.output/'results.json').write_text(json.dumps(results,indent=2))
         body=['<!doctype html><meta charset="utf-8"><title>Neural teacher ACT pilot</title>',
             '<h1>Neural teacher ACT pilot</h1><p>Frozen qualified neural actor; no exploration or analytic intervention. '
-            'Blue e2–e4 only. Left: fixed red view with move highlight. Right: blue wrist. '
+            'Listed qualified ordinary goals only. Left: fixed red view with move highlight. Right: blue wrist. '
             'Preview uses the saved before-action frames at simulated 30 Hz.</p>']
         for result in results:
-            body.append(f'<h2>Seed {result["seed"]}: {html.escape(result["score"]["reason"])}</h2>'
+            body.append(f'<h2>{html.escape(result["case"]["move"])} — seed {result["seed"]}: {html.escape(result["score"]["reason"])}</h2>'
                 f'<video controls preload="metadata" width="1200" src="{html.escape(result["reset_name"])}/cameras.mp4"></video>'
                 f'<p>Desired board (separate future policy input):</p><img width="320" '
-                f'src="{html.escape(result["reset_name"])}/desired_board.svg" alt="Desired chess board after e2e4">')
+                f'src="{html.escape(result["reset_name"])}/desired_board.svg" alt="Desired chess board">')
         (args.output/'videos.html').write_text('\n'.join(body))
         save_status(args.output/'status.json',stage='neural_ACT_pilot_complete',attempts=len(results),
             accepted_episodes=len(accepted),accepted_frames=sum(e['frames'] for e in accepted),uploaded=False,

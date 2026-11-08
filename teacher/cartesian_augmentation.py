@@ -26,10 +26,14 @@ def augment_cartesian(inputs,labels,aux,noise,midpoint,low,high,config):
     inputs[:,:6]=qnew/180;inputs[:,23:29]=(cmdnew-qnew)/5
     inputs[:,12:15]=(grasp_new-pnew)/.03
     inputs[:,15:18]+=(center_new-center)/.03;inputs[:,18:21]-=(center_new-center)/.1
-    inputs[:,41]=up[:,2];inputs[:,68:71]=up
+    # Material grasp targets can lie below a piece's COM (e.g. a knight).
+    # Preserve the distinction between that signed axis and actual uprightness.
+    axis_sign=torch.where(inputs[:,41]*inputs[:,70]<0,-1.,1.)
+    true_up_z=up[:,2]*axis_sign
+    inputs[:,41]=true_up_z;inputs[:,68:71]=up
     inputs[:,35:38]=torch.where(held[:,None],rotate(inputs[:,35:38]),inputs[:,35:38])
     inputs[:,38:41]=torch.where(held[:,None],rotate(inputs[:,38:41]),inputs[:,38:41])
-    centers[indices,source]=center_new;uprights[indices,source]=up[:,2]
+    centers[indices,source]=center_new;uprights[indices,source]=true_up_z
     distance=torch.linalg.norm(centers-pnew[:,None,:],dim=2);distance[indices,source]=float('inf')
     nearest=distance.topk(4,largest=False).indices
     neighbours=centers.gather(1,nearest[:,:,None].expand(-1,-1,3))

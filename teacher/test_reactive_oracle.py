@@ -1,7 +1,7 @@
 import unittest
 import numpy as np
 import torch
-from teacher.reactive_oracle import ReactiveOracle
+from teacher.reactive_oracle import ReactiveOracle,FlowConfig
 from teacher.task_space import CartesianConfig
 from teacher.demonstration_filter import settled_dwell
 from teacher.collect_corrections import TrainingMixture
@@ -9,6 +9,22 @@ from teacher.geometry_features import geometry_values
 
 
 class OracleTests(unittest.TestCase):
+    def test_orientation_profile_changes_height_transition_without_clock(self):
+        with self.assertRaises(ValueError): FlowConfig(orientation_low_m=.15,orientation_high_m=.10)
+        x=self.pose();x[12:15]=[.1,0,-.15/.03];x[74]=(24-65)/90
+        early=ReactiveOracle(CartesianConfig(),FlowConfig(grip_pitch_deg=85,orientation_high_m=.23,orientation_low_m=.17))
+        default=ReactiveOracle(CartesianConfig(),FlowConfig(grip_pitch_deg=85))
+        self.assertGreater(early.predict(x)[0][3],default.predict(x)[0][3])
+        changed=x.copy();changed[67]=.8
+        np.testing.assert_array_equal(early.predict(changed)[0],early.predict(x)[0])
+
+    def test_tight_approach_keeps_fingers_above_head_until_laterally_centered(self):
+        oracle=ReactiveOracle(CartesianConfig(),FlowConfig(funnel_inner_m=.0005,funnel_outer_m=.0025,close_xy_m=.0008,close_z_m=.001))
+        x=self.pose();x[12:15]=[.005/.03,0,0]
+        action,_=oracle.predict(x);self.assertGreater(action[2],0);self.assertEqual(action[5],1)
+        x[12:15]=[.0015/.03,0,0];action,_=oracle.predict(x)
+        self.assertEqual(action[5],1)
+        x[12:15]=0;action,_=oracle.predict(x);self.assertEqual(action[5],-1)
     def setUp(self):
         self.oracle=ReactiveOracle(CartesianConfig())
     def pose(self):

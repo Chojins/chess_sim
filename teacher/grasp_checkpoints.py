@@ -19,6 +19,11 @@ def file_hash(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def policy_success(row):
+    return bool(row['score']['success'] and row.get('robot_collision_audit',{}).get('contact_free',True)
+        and row.get('camera_clearance_audit',{}).get('passed',True))
+
+
 class ConservativeSAC(SAC):
     def __init__(self,*args,actor_lr_scale=1/3,critic_warmup_updates=512,**kwargs):
         if (not np.isfinite(actor_lr_scale) or not 0<actor_lr_scale<=1
@@ -37,12 +42,15 @@ class ConservativeSAC(SAC):
 
 
 class GraspSelection:
-    def __init__(self,output,entries,prefix='grasp',complete_moves=False,prefer_faster=False):
+    def __init__(self,output,entries,prefix='grasp',complete_moves=False,prefer_faster=False,
+                 objective='unified_e2e4',group_by_case=False):
         self.output=Path(output)
         if not prefix.isidentifier(): raise ValueError('Checkpoint prefix must be an identifier')
         self.prefix=prefix
         self.complete_moves=complete_moves
         self.prefer_faster=prefer_faster
+        self.objective=objective;self.group_by_case=group_by_case
+        self.cases={e['name']:e['case'] for e in entries} if group_by_case else {}
         self.expected={entry['name']:entry.get('family','open_approach') for entry in entries}
         if len(self.expected)!=len(entries) or not entries:
             raise ValueError('Validation reset identities must be nonempty and unique')
@@ -60,10 +68,12 @@ class GraspSelection:
             if (row['reset_family']!=family
                     or (bool(row['score'].get('complete_chess_move',False))
                         != (bool(row['score']['success']) if self.complete_moves else False))
-                    or (self.complete_moves and row['score'].get('objective')!='unified_e2e4')):
+                    or (self.complete_moves and row['score'].get('objective')!=self.objective)):
                 raise ValueError('Validation task or reset family changed')
-            count=counts.setdefault(family,{'successes':0,'trials':0})
-            count['trials']+=1;count['successes']+=bool(row['score']['success'])
+            if self.group_by_case and row.get('case')!=self.cases[row['reset_name']]: raise ValueError('Validation goal changed')
+            group=f'{self.cases[row["reset_name"]]["id"]}/{family}' if self.group_by_case else family
+            count=counts.setdefault(group,{'successes':0,'trials':0})
+            count['trials']+=1;count['successes']+=policy_success(row)
         successes=sum(c['successes'] for c in counts.values())
         rank=(min(c['successes']/c['trials'] for c in counts.values()),successes)
         if self.prefer_faster:

@@ -3,10 +3,108 @@
 See [PROGRESS.md](PROGRESS.md) for current results, negative experiments and
 the qualification gate. Launching a run does not establish collection readiness.
 
-The standalone e2–e4 teacher now has a pinned [qualified RL checkpoint](../docs/baselines/v65-neural-teacher.json):
+The current **RGB-only ACT pilot** passed 20/20 held-out simulated starts with
+**50 executed actions per chunk**, no robot contacts and at least 7.919 mm
+sampled camera clearance. Use the exact checkpoint and runtime profile in
+[`v116-rgb-act-student.json`](../docs/baselines/v116-rgb-act-student.json).
+Its source checkpoint config still says ten actions; `GoalACT` and the student
+training/review CLIs now default to fifty, or pass `--n-action-steps 50`
+explicitly. Scope remains the four initial-board blue pawn moves below.
+Captures, other positions, red control and real hardware remain unqualified.
+
+The current collision-aware four-goal teacher is
+[`v109-collision-aware-neural-teacher.json`](../docs/baselines/v109-collision-aware-neural-teacher.json):
+the frozen v108 final trained actor passed 20/20 fresh starts and 4/4 matched
+camera reviews, with no robot contacts and at least 7.66 mm sampled camera
+clearance. Scope: initial-board blue e2e4, e2e3, d2d4 and c2c4 only. Pilot ACT
+collection prerequisites pass; each newly collected episode still needs its
+independent acceptance audit. No ACT retraining or hardware transfer is claimed.
+
+The current local RGB pilot is queued through
+`outputs/clearance-rgb-pipeline-v112.log`: twelve new episodes → three-view
+LeRobot export → a separate original-ACT copy fine-tuned with equal-weight
+sim/real replay → checkpoint reload verification → four RGB-only simulated
+tests. See the stage JSON next to that log for the active phase. One whole sim
+episode per move and four whole real episodes are held out. Original ACT
+weights remain immutable; a fitted checkpoint still needs closed-loop checks.
+
+The historical standalone e2–e4 teacher has a pinned [qualified RL checkpoint](../docs/baselines/v65-neural-teacher.json):
 20/20 fresh home starts, plus matched-camera review. This qualification is for
-the blue robot's ordinary e2–e4 on this setup. The original ACT is unchanged;
-RGB student training and other moves remain subsequent work.
+the blue robot's ordinary e2–e4 with self-collision disabled. It establishes no
+camera/servo clearance. The original ACT is unchanged.
+The separately versioned four-move curriculum and RGB student pilot below are
+in development; their results do not extend that pinned qualification.
+
+## Four-move teacher and RGB ACT pilot
+
+`ordinary_move_v1` supports explicit legal histories and requested blue pawn or
+knight moves. Current experiments train the initial-board pawn goals e2e4,
+e2e3, d2d4 and c2c4. Support in the task code does not establish knight or capture
+reliability. `build_ordinary_bank.py` creates disjoint physical home starts;
+`probe_moves.py` distinguishes frozen learned evaluations from analytic reference
+runs. The original e2e4 task, calibration and qualified actors stay separate.
+
+`ordinary-relational-bootstrap-v76` passed the first four recorded camera trials,
+then 7/8 development validation starts. Fresh qualification stopped after an
+e2e3 miss made its predeclared per-move threshold unreachable. It has **not**
+qualified for balanced four-move ACT collection. Corrective fitting uses only
+training rollouts, never the validation or qualification failures as labels.
+
+The current collision-aware candidate is `clearance-return-arm-v99`: 8/8
+development moves and 4/4 filmed moves, with no self/inter-robot contacts.
+Sampled exact camera/servo CAD gaps in the filmed trials exceeded 7.41 mm;
+`clearance-final-qualification-v102` separately tests twenty fresh starts under
+a predeclared 5 mm gate. Check its final status. This actor was fitted with
+supervision, not improved by RL. See [collision geometry and audit scope](../calibration/robot_collisions.md).
+Launch corrected worlds with `--robot-self-collisions --robot-collision-geometry
+decomposed`, using a new reset bank. Old self-disabled replay is incompatible.
+
+For measured clearance rewards, use `run_dataset_python.sh` (its `python-fcl`
+dependency is separate from the locked RL environment). `train_move` accepts
+`--camera-clearance-reward-weight .04 --camera-clearance-buffer-mm 8` with the
+existing mesh/margin flags. The 5 mm acceptance gate stays unchanged. Rebuild
+physical replay with the matching `reconstruct --camera-clearance-reward-meshes`
+contract before training; mismatched replay rewards are rejected. Raw reward
+audits recompute CAD costs from measured joints.
+
+`placement_corrections` makes supervised arm labels from audited training-only
+state exports. `train_move --placement-corrections <pool.npz>` adds these labels
+to the actor loss, without inserting pose variants into physical replay.
+`--arm-head-only` preserves the shared actor, jaw and exploration parameters
+while refining its five arm output rows. Saved inference remains the ordinary
+neural actor, with no analytic action override. Current comparison:
+`clearance-placement-rl-v108`; its launch is not a success/qualification result.
+
+Once an actor passes `qualify_move` and matched camera review for every case,
+collect at least two accepted episodes per goal, then export the separate desired
+board image with `teacher.export_episodes --goal-input`. For an initial student:
+
+```bash
+bash run_dataset_python.sh -m teacher.train_student \
+  --index outputs/ordinary-episodes/accepted_episodes.json \
+  --output outputs/ordinary-rgb-act --updates 1000 --batch-size 1
+bash run_dataset_python.sh -m teacher.review_student \
+  --checkpoint outputs/ordinary-rgb-act/checkpoint_001000 \
+  --teacher-run outputs/ordinary-qualified-actor \
+  --output outputs/ordinary-rgb-review --url http://127.0.0.1:8082
+```
+
+The student strictly copies the original ACT model and normalization, adding a
+third RGB view for the desired board. Shared vision/model weights also receive
+equal-weight two-view replay from local blue real demonstrations, where the
+desired board was not recorded. Only the known `main_` joint namespace is aliased;
+values retain their original order and legacy units. Training chunks stay inside
+one episode and mask padding; the last whole episode per goal is validation.
+Both domains contribute gradients to one AdamW update. Source checkpoints and
+datasets are read-only; all student checkpoints are new local copies.
+
+Student inference receives only measured joints, highlighted fixed RGB, wrist
+RGB and the requested desired-board diagram. Simulator geometry scores the
+rollout, but supplies no action proposals. Absolute ACT targets pass through a
+generic uniform joint slew limit; there is no grasp or capture phase controller.
+Offline action loss and an optimizer smoke test do not establish closed-loop
+success or hardware readiness. Follow the checkpoint named by `selection.json`
+and inspect real camera rollouts before treating it as a usable student.
 
 ```bash
 # One controlling client per port. Output directories must be new.

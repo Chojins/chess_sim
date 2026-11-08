@@ -15,17 +15,24 @@ from teacher.grasp_checkpoints import ConservativeSAC,file_hash
 
 def make_env(manifest,url,split):
     objective=manifest['objective']
-    if objective=='unified_e2e4':
+    if objective in ('unified_e2e4','ordinary_move'):
         from teacher.move_teacher import MoveEnv,MoveConfig
         if manifest.get('policy_action_space'):
             from teacher.task_space import TaskSpaceMoveEnv,CartesianConfig
             from teacher.verify_task_space import audit_trial
-            env=TaskSpaceMoveEnv(manifest['bank'],url,split=split,config=MoveConfig(**manifest['move_config']),adaptive=False,
-                gamma=manifest['action_config']['gamma'],cartesian_config=CartesianConfig(**manifest['cartesian_config']))
+            env_type=TaskSpaceMoveEnv
+            if objective=='ordinary_move':
+                from teacher.ordinary_moves import OrdinaryTaskSpaceEnv
+                env_type=OrdinaryTaskSpaceEnv
+            env=env_type(manifest['bank'],url,split=split,config=MoveConfig(**manifest['move_config']),adaptive=False,
+                gamma=manifest['action_config']['gamma'],cartesian_config=CartesianConfig(**manifest['cartesian_config']),
+                robot_contact_costs=manifest.get('robot_contact_costs'),terminate_on_robot_contact=manifest.get('terminate_on_robot_contact',False),
+                camera_clearance_reward=manifest.get('camera_clearance_reward_contract'))
         else:
             from teacher.verify_move import audit_trial
             env=MoveEnv(manifest['bank'],url,split=split,config=MoveConfig(**manifest['move_config']),adaptive=False,
-                gamma=manifest['action_config']['gamma'])
+                gamma=manifest['action_config']['gamma'],robot_contact_costs=manifest.get('robot_contact_costs'),terminate_on_robot_contact=manifest.get('terminate_on_robot_contact',False),
+                camera_clearance_reward=manifest.get('camera_clearance_reward_contract'))
     elif objective=='transport_place_only':
         from teacher.transport_place import TransportPlaceEnv,PlaceConfig
         from teacher.verify_transport import audit_trial
@@ -39,6 +46,16 @@ def make_env(manifest,url,split):
         raise ValueError('Review action contract differs from training')
     if env.base.mapping!=manifest['joint_map'] or env.schema!=manifest['observation_schema']:
         raise ValueError('Review calibration or observation layout changed')
+    if 'physics_settings' in manifest:
+        from teacher.physics_contract import physics_signature
+        if physics_signature(env.base.actual['physics_settings'])!=manifest['physics_settings']:
+            env.close();raise ValueError('Frozen teacher collision/dynamics contract differs from the simulator')
+    if 'camera_clearance_contract' in manifest:
+        original_audit=audit_trial
+        def audit_with_clearance(path,contract):
+            from teacher.robot_clearance import append_clearance_audit
+            return append_clearance_audit(path,contract,original_audit(path,contract))
+        return env,audit_with_clearance
     return env,audit_trial
 
 
@@ -75,6 +92,7 @@ def main():
     parser.add_argument('--output',type=Path,required=True);parser.add_argument('--url',default='http://127.0.0.1:8082')
     parser.add_argument('--split',default='test',choices=['train','validation','test','evaluation'])
     parser.add_argument('--families',nargs='+');parser.add_argument('--maximum-trials',type=int,default=0)
+    parser.add_argument('--one-per-case',action='store_true')
     args=parser.parse_args()
     if args.maximum_trials<0: parser.error('maximum-trials must be nonnegative')
     args.output.mkdir(parents=True,exist_ok=False);torch.set_num_threads(2);env=None
@@ -83,6 +101,11 @@ def main():
         env,audit=make_env(source,args.url,args.split);model=ConservativeSAC.load(checkpoint,device='cpu')
         if model.observation_space.shape!=env.observation_space.shape: raise ValueError('Actor input size changed')
         entries=[r for r in env.entries if not args.families or r['family'] in args.families]
+        if args.one_per_case:
+            if source['objective']!='ordinary_move': raise ValueError('one-per-case requires ordinary goal cases')
+            first={}
+            for entry in entries: first.setdefault(entry['case']['id'],entry)
+            entries=list(first.values())
         if args.families and set(args.families)!={r['family'] for r in entries}: raise ValueError('Requested family missing')
         if args.maximum_trials: entries=entries[:args.maximum_trials]
         if not entries: raise ValueError('No requested review trials')
@@ -95,7 +118,7 @@ def main():
         camera=PairedCameraClient(args.url,timeout=30);results=[]
         def pair(latest):
             images=matched_images(camera,latest)
-            fixed=highlight_move(np.ascontiguousarray(images['red'][...,::-1]),calibration,source['case']['move'])
+            fixed=highlight_move(np.ascontiguousarray(images['red'][...,::-1]),calibration,latest['observation']['task_geometry']['move'])
             return {'laptop_rgb':np.ascontiguousarray(fixed[...,::-1]),'phone_rgb':images['blue']}
         for entry in entries:
             directory=args.output/entry['name'];directory.mkdir();env.fixed_entry=entry
@@ -116,7 +139,15 @@ def main():
                 'score':rows[-1]['score'],'video':video.verify(),'motion':motion_metrics(rows,initial['telemetry']['observation']),
                 'scope':'home-start' if entry['family']=='home' else 'intermediate-start continuation',
                 'collection':{'accepted_for_act_training':False}}
-            (directory/'result.json').write_text(json.dumps(result,indent=2));audit(directory,manifest);results.append(result)
+            if 'case' in entry: result['case']=entry['case']
+            (directory/'result.json').write_text(json.dumps(result,indent=2));checked=audit(directory,manifest)
+            if 'robot_collision_audit' in checked:
+                result['robot_collision_audit']=checked['robot_collision_audit']
+                (directory/'result.json').write_text(json.dumps(result,indent=2))
+            if 'camera_clearance_audit' in checked:
+                result['camera_clearance_audit']=checked['camera_clearance_audit']
+                (directory/'result.json').write_text(json.dumps(result,indent=2))
+            results.append(result)
             print('FROZEN_CAMERA_TRIAL',json.dumps(result),flush=True)
         if file_hash(checkpoint)!=digest: raise ValueError('Frozen checkpoint changed while recording')
         body=['<!doctype html><meta charset="utf-8"><title>Frozen teacher review</title>',

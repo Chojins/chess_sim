@@ -29,10 +29,14 @@ class MoveConfig:
 
 class MoveTask:
     version='unified_e2e4_v1'
-    def __init__(self,baseline,actual,point,command,history,config=None):
-        self.config=config or MoveConfig();g=baseline['task_geometry']
+    objective='unified_e2e4'
+    tipped_reason='pawn_tipped'
+    def validate_geometry(self,g):
         if g['move']!='e2e4' or g['capture_index'] is not None:
             raise ValueError('Only ordinary blue e2e4 is implemented')
+    def __init__(self,baseline,actual,point,command,history,config=None):
+        self.config=config or MoveConfig();g=baseline['task_geometry']
+        self.validate_geometry(g)
         self.index=g['source_index'];self.target=np.array(g['target_center_m'])
         self.original=np.array(baseline['pieces']['piece_centers_m'][self.index])
         self.home=np.array(baseline['measured_joint_deg'])[:5]
@@ -104,7 +108,7 @@ class MoveTask:
         disturbed=self.monitor._adapt(actual)['pieces']['other_pieces_displaced_over_3mm']
         reason=None
         if disturbed: reason='disturbed_other_piece'
-        elif upright<np.cos(np.deg2rad(30)): reason='pawn_tipped'
+        elif upright<np.cos(np.deg2rad(30)): reason=self.tipped_reason
         elif bad_release: reason='release_outside_target_or_too_high'
         elif height>c.max_height_m or np.linalg.norm(center[:2]-self.target[:2])>.15: reason='piece_outside_workspace'
         elif self.streak>=c.stable_steps: reason='placed_released_home'
@@ -114,7 +118,7 @@ class MoveTask:
         self.done=terminated or truncated
         self.previous_center=center.copy();self.previous_fingers=f;self.previous_error=error
         return (10. if success else -2. if terminated else 0.),terminated,truncated,{
-            'objective':'unified_e2e4','task_version':self.version,'success':success,'reason':reason,
+            'objective':self.objective,'task_version':self.version,'success':success,'reason':reason,
             'complete_chess_move':success,'target_error_m':target_error,'height_m':height,'max_lift_m':self.max_lift,
             'grasp_error_m':error,'finger_contact_evidence':contact,'lifted':bool(self.lifted),
             'released_on_target':self.released,'release_intent':self.release_location or self.pending_release,
@@ -124,12 +128,21 @@ class MoveTask:
 
 class MoveEnv(gym.Env):
     metadata={}
-    def __init__(self,bank_manifest,url='http://127.0.0.1:8081',split='train',config=None,adaptive=True,gamma=.99):
+    task_type=MoveTask
+    def __init__(self,bank_manifest,url='http://127.0.0.1:8081',split='train',config=None,adaptive=True,gamma=.99,case=None,robot_contact_costs=None,terminate_on_robot_contact=False,camera_clearance_reward=None):
+        from teacher.robot_contacts import contact_costs
+        self.robot_contact_costs=contact_costs(robot_contact_costs)
+        self.terminate_on_robot_contact=bool(terminate_on_robot_contact)
+        self.camera_clearance_reward_contract=camera_clearance_reward
+        self.camera_clearance_reward=None
+        if camera_clearance_reward is not None:
+            from teacher.robot_clearance import ClearanceReward
+            self.camera_clearance_reward=ClearanceReward(camera_clearance_reward)
         self.bank=json.loads(Path(bank_manifest).read_text());self.entries=[r for r in self.bank['entries'] if r['split']==split]
         if not self.entries: raise ValueError('No move resets for split')
         self.fixed_entry=None;self.move_config=config or MoveConfig();self.adaptive=adaptive
         self.sampler=SuccessSampler([r['name'] for r in self.entries]);self.training_names=set(self.sampler.names)
-        self.base=StateTeacherEnv(url,case=ORDINARY_CASE,config=TeacherConfig(max_steps=self.move_config.horizon,
+        self.base=StateTeacherEnv(url,case=case or ORDINARY_CASE,config=TeacherConfig(max_steps=self.move_config.horizon,
             gamma=gamma,jitter_mm=0,action_mode='delta',max_velocity_deg_s=(15.,15.,15.,15.,15.,45.),
             acceleration_weight=.0005,acceleration_cost_cap=.003))
         self.action_space=self.base.action_space
@@ -144,10 +157,13 @@ class MoveEnv(gym.Env):
         candidates=np.array([j for j in range(len(centers)) if j!=i]);nearest=candidates[np.argsort(np.linalg.norm(centers[candidates]-point,axis=1))[:4]]
         neighbours=np.c_[(centers[nearest]-point)/.05,np.asarray(p['piece_upright_cosines'])[nearest]]
         f=self.task.fingers(o);up=grasp-center;up/=max(np.linalg.norm(up),1e-8)
+        move=o['task_geometry']['move']
+        move_coordinates=[(ord(move[0])-ord('a'))/7,(int(move[1])-1)/7,
+            (ord(move[2])-ord('a'))/7,(int(move[3])-1)/7]
         values=np.r_[q/180,np.asarray(o['joint_velocity_deg_s'])/60,(grasp-point)/.03,(center-self.task.original)/.03,
             (self.task.target-center)/.1,f/10,(base.command-q)/5,self.previous_action,
             np.asarray(o['piece_velocities_m_s_rad_s'][i])/[.1,.1,.1,5,5,5],p['piece_upright_cosines'][i],
-            neighbours.ravel(),[4/7,1/7,4/7,3/7],(self.task.home-q[:5])/90,
+            neighbours.ravel(),move_coordinates,(self.task.home-q[:5])/90,
             1-self.task.steps/self.episode_config.horizon,up].astype(np.float32)
         return values
     def _observation(self):
@@ -176,10 +192,10 @@ class MoveEnv(gym.Env):
             np.asarray(base.actual['target_legacy_action'])-base.mapping['legacy_home']),base.low,base.high)
         base.previous_q=np.asarray(base.actual['measured_joint_deg']);base.velocity=np.zeros(6)
         base.previous_potential=base.encoder.potential(base.actual,base.task);base.needs_reset=False
-        self.task=MoveTask(baseline,base.actual,base.encoder.point(base.actual),base.command,history,self.episode_config)
+        self.task=self.task_type(baseline,base.actual,base.encoder.point(base.actual),base.command,history,self.episode_config)
         self.previous_action=np.zeros(6);self.previous_potential=self.task.potential(base.actual,base.encoder.point(base.actual),base.command)
-        self.needs_reset=False
-        return self._observation(),{'reset_name':self.entry['name'],'reset_context':context,'telemetry':latest,'objective':'unified_e2e4'}
+        self.needs_reset=False;self.robot_contact_seen=False;self.camera_margin_violated=False
+        return self._observation(),{'reset_name':self.entry['name'],'reset_context':context,'telemetry':latest,'objective':self.task.objective}
     def step(self,action):
         if self.needs_reset: raise RuntimeError('Reset before stepping')
         self.needs_reset=True
@@ -189,17 +205,39 @@ class MoveEnv(gym.Env):
         _,_,_,_,info=self.base.step(action)
         point=self.base.encoder.point(self.base.actual)
         terminal,terminated,truncated,score=self.task.update(self.base.actual,point,self.base.command)
+        from teacher.robot_contacts import contact_terminal
+        terminal,terminated,truncated,score=contact_terminal(self.base.actual,self.terminate_on_robot_contact,terminal,terminated,truncated,score)
+        if terminated or truncated:self.task.done=True
         potential=self.task.potential(self.base.actual,point,self.base.command)
         shaping=.5*(self.base.config.gamma*(0 if terminated else potential)-self.previous_potential)
-        cost=min(.003,sum(info['teacher']['penalties'].values()));reward=float(terminal+shaping-.003-cost)
+        from teacher.robot_contacts import collision_cost
+        collision=collision_cost(self.base.actual,self.robot_contact_costs)
+        camera=self.camera_clearance_reward.evaluate(self.base.actual) if self.camera_clearance_reward else None
+        cost=min(.003,sum(info['teacher']['penalties'].values()));reward=float(terminal+shaping-.003-cost-collision-(camera['cost'] if camera else 0.))
         self.previous_action=np.asarray(action,np.float32).copy();self.previous_potential=potential
         self.needs_reset=terminated or truncated;self.base.needs_reset=self.needs_reset
         score['reset_family']=self.entry['family'];score['home_start']=self.entry['family']=='home'
+        contacts=self.base.actual.get('robot_contacts',{})
+        self.robot_contact_seen|=bool(contacts.get('self_contact') or contacts.get('inter_robot_contact'))
+        if camera is not None:self.camera_margin_violated|=camera['minimum_gap_m']<self.camera_clearance_reward_contract['minimum_m']
+        accepted_success=bool(score['success'] and not self.robot_contact_seen and not self.camera_margin_violated)
         if self.needs_reset and self.fixed_entry is None and self.entry['name'] in self.training_names:
-            self.sampler.record(self.entry['name'],bool(score['success']))
+            self.sampler.record(self.entry['name'],accepted_success)
         info['teacher']['unused_full_move_shaping']=info['teacher']['shaping']
         info['teacher'].update(shaping=shaping,potential=potential)
-        info.update(score=score,is_success=score['success'],reset_name=self.entry['name'],objective='unified_e2e4',
+        info.update(score=score,is_success=accepted_success,reset_name=self.entry['name'],objective=self.task.objective,
             reward_components={'task':terminal,'shaping':shaping,'time':-.003,'cost':-cost})
+        if any(self.robot_contact_costs.values()): info['reward_components']['robot_collision']=-collision
+        if camera is not None:
+            info['teacher']['camera_clearance_reward']=camera
+            info['reward_components']['camera_clearance']=-camera['cost']
         return self._observation(),reward,terminated,truncated,info
     def close(self): self.base.close()
+
+
+def task_type_for_objective(objective):
+    if objective=='unified_e2e4': return MoveTask
+    if objective=='ordinary_move':
+        from teacher.ordinary_moves import OrdinaryMoveTask
+        return OrdinaryMoveTask
+    raise ValueError('Unsupported move objective')

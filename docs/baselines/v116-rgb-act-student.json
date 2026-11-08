@@ -1,0 +1,89 @@
+{
+  "format": "validated_sim_RGB_ACT_pilot_v1",
+  "date": "2026-11-08",
+  "checkpoint": "/home/jacob/Documents/chess_sim/outputs/clearance-rgb-act-v112/checkpoint_000750",
+  "checkpoint_sha256": "7e89ad2566a2c21be8f9d79f1bfefa5731f7e8a8f0457c37fe3cfc4ba44c47e7",
+  "saved_config_sha256": "fb4c3bc41babde8313fadd69c18939fb595012b6b38e9bf787f8115ca2979b34",
+  "runtime": {
+    "policy": "GoalACT",
+    "n_action_steps_override": 50,
+    "predicted_chunk_size": 100,
+    "temporal_ensemble_coeff": null,
+    "note": "Saved training checkpoint config contains n_action_steps=10. Override to 50 for this validated execution profile.",
+    "inputs": [
+      "measured legacy joint state",
+      "highlighted fixed RGB",
+      "wrist RGB",
+      "separate desired-board RGB"
+    ],
+    "runtime_teacher": false,
+    "runtime_oracle": false,
+    "control_hz": 30,
+    "arm_target_limit_deg_s": 15,
+    "jaw_target_limit_deg_s": 45,
+    "joint_action_control": "absolute legacy targets with uniform joint slew"
+  },
+  "scope": "Blue initial-board e2e4, e2e3, d2d4, c2c4 from home in the current simulator; source pawn XY jitter within 0.5 mm per axis",
+  "heldout_review": {
+    "path": "outputs/clearance-rgb-heldout50-v116",
+    "results_sha256": "e1c02a0066bb3f5d353af28a0726ea368936f64812e695ecdcff8495a8369556",
+    "manifest_sha256": "10187e340c13285f12aa45acd9039f58658b801590484e160bbc6d3dc578f020",
+    "trials": 20,
+    "successes": 20,
+    "per_move": {
+      "e2e4": {
+        "trials": 5,
+        "successes": 5
+      },
+      "e2e3": {
+        "trials": 5,
+        "successes": 5
+      },
+      "d2d4": {
+        "trials": 5,
+        "successes": 5
+      },
+      "c2c4": {
+        "trials": 5,
+        "successes": 5
+      }
+    },
+    "robot_contact_trials": 0,
+    "minimum_sampled_camera_gap_mm": 7.919096841180592,
+    "maximum_final_placement_error_mm": 0.5892704111686877,
+    "seeds": [
+      140001,
+      140002,
+      140003,
+      140004,
+      140005
+    ],
+    "training_enabled": false,
+    "weights_or_execution_selection_on_these_results": false
+  },
+  "training": {
+    "run": "outputs/clearance-rgb-act-v112",
+    "selected_checkpoint": "checkpoint_000750",
+    "updates": 1000,
+    "source_original_ACT": "/home/jacob/lerobot/outputs/train/chess_game_multi_stereo/checkpoints/1280000/pretrained_model",
+    "source_original_ACT_sha256": "1c3bd3791fa64bbf4bdb4b2f847d34030c1dc7462a5579b1992d6bebdae6f981",
+    "accepted_sim_episodes": 12,
+    "accepted_sim_frames": 6725,
+    "sim_train_episodes": 8,
+    "sim_validation_episodes": 4,
+    "real_train_episodes": 32,
+    "real_validation_episodes": 4,
+    "mix": "equal-weight sim/real loss",
+    "goal_views": 3,
+    "real_replay_views": 2
+  },
+  "videos": "outputs/clearance-rgb-heldout50-v116/videos.html",
+  "ready_for_real_robot": false,
+  "remote_upload": false,
+  "limitations": [
+    "Twenty trials share five XY-jitter seeds across four goals; this is a narrow simulator pilot, not a broad reliability estimate",
+    "Captures, knights, red control, other board states, camera/calibration variation and hardware remain unqualified",
+    "Sampled CAD margins cover four camera/shoulder/upper-arm surface pairs; other body contacts are checked by configured PhysX reports",
+    "No claim that the student responds correctly to arbitrary goal images or recovers arbitrary displaced pieces"
+  ]
+}

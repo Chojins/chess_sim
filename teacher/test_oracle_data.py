@@ -12,10 +12,12 @@ class OracleDataTests(unittest.TestCase):
         bank=root/f'{name}_bank.json';entry={'name':name,'seed':train_seed,'split':split}
         bank.write_text(json.dumps({'entries':[entry,{'name':name+'_reserved','seed':reserved_seed,'split':'test'}]}))
         manifest=root/f'{name}_manifest.json'
+        trial=root/name;trial.mkdir()
+        (trial/'initial.json').write_text(json.dumps({'telemetry':{'observation':{'physics_settings':{'contacts':{'robot_self_collisions':False}}}}}))
         manifest.write_text(json.dumps({'bank':str(bank),'bank_sha256':file_hash(bank),
             'policy_action_space':'opening_xyz_pitch_roll_binary_jaw_v1','case':{'move':'e2e4'},
             'action_config':{},'move_config':{},'observation_schema':{},'joint_map':{},'cartesian_config':{}}))
-        meta={'training_only':True,'sources':[{'split':split,'seed':train_seed,'reset_name':name}],
+        meta={'training_only':True,'sources':[{'split':split,'seed':train_seed,'reset_name':name,'path':str(trial)}],
             'manifest':str(manifest),'manifest_sha256':file_hash(manifest)}
         path=root/f'{name}.npz'
         np.savez(path,metadata_json=np.array(json.dumps(meta)),observation=np.zeros((1,76),np.float32),

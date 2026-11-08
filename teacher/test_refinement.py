@@ -18,12 +18,51 @@ from teacher.refinement import RefinementSAC
 
 
 class RefinementTests(unittest.TestCase):
+    def test_arm_only_updates_preserve_jaw_shared_features_and_saved_inference(self):
+        with TemporaryDirectory() as tmp:
+            root=Path(tmp);path,env=self.setup_data(root);model=self.model()
+            model.configure_reference(path,env,12);model.configure_arm_head_only()
+            model.set_logger(configure(str(root/'optimizer'),[]));model._current_progress_remaining=1.
+            before=copy.deepcopy(model.actor.state_dict());x=np.zeros((2,71),np.float32)
+            initial,_=model.predict(x,deterministic=True)
+            model.train(4,2);model.train(4,2)
+            self.assertTrue(model.assert_arm_head_preserved()['passed'])
+            self.assertFalse(torch.equal(before['mu.weight'][:5],model.actor.mu.weight[:5]))
+            after,_=model.predict(x,deterministic=True);np.testing.assert_array_equal(initial[:,5],after[:,5])
+            model.save(root/'arm_only');restored=RefinementSAC.load(root/'arm_only.zip',device='cpu')
+            np.testing.assert_array_equal(after,restored.predict(x,deterministic=True)[0])
+            self.assertFalse(hasattr(restored,'preserved_grasp_state'))
+
+    def test_reference_with_old_camera_rewards_is_rejected_before_replay_mutation(self):
+        with TemporaryDirectory() as tmp:
+            path,env=self.setup_data(Path(tmp));env.camera_clearance_reward_contract={'buffer_m':.008}
+            model=self.model()
+            with self.assertRaisesRegex(ValueError,'camera-clearance reward'):model.configure_reference(path,env,12)
+            self.assertEqual(model.replay_buffer.size(),0)
+
+    def test_counterfactual_supervision_does_not_enter_physical_replay(self):
+        with TemporaryDirectory() as tmp:
+            root=Path(tmp);path,env=self.setup_data(root);model=self.model();model.configure_reference(path,env,12)
+            pool=root/'labels.npz';np.savez(pool,observation=np.zeros((8,71),np.float32),label=np.zeros((8,6),np.float32),
+                counterfactual_observation=np.array([False]*4+[True]*4))
+            manifest={'oracle_training_only':True,'validation_used_for_gradients':False,'physics_settings':env.base.actual['physics_settings'],
+                'training_sources':[{'episodes':[{'split':'train'}]}],'supervised_pool_sha256':file_hash(pool)}
+            result=model.configure_supervised_prior(pool,manifest)
+            self.assertEqual(model.replay_buffer.size(),4);self.assertEqual(len(model.prior_observations),8)
+            self.assertEqual(result['counterfactual_observations'],4);self.assertEqual(result['synthetic_replay_transitions'],0)
+            model.actor.optimizer.zero_grad()
+            loss=model._supervised_loss(model.prior_observations,model.prior_actions,True,model.prior_jaw_probability)
+            loss.backward()
+            self.assertTrue(all(p.grad is None or float(p.grad.abs().max())<1e-7 for p in model.actor.parameters()))
+
     def setup_data(self,root,source_split='train',gamma=.997):
         config=TeacherConfig(max_steps=800,gamma=.997,jitter_mm=0,action_mode='delta',
             max_velocity_deg_s=(15.,15.,15.,15.,15.,45.),acceleration_weight=.0005,acceleration_cost_cap=.003)
-        env=SimpleNamespace(base=SimpleNamespace(config=config),move_config=MoveConfig(),schema={'test':71},entries=[{'seed':1}])
+        physics={'contacts':{'robot_self_collisions':False}}
+        env=SimpleNamespace(base=SimpleNamespace(config=config,actual={'physics_settings':physics}),move_config=MoveConfig(),schema={'test':71},entries=[{'seed':1}])
         source=root/'manifest.json';source.write_text('{}')
-        metadata={'training_only':True,'sources':[{'split':source_split}],'manifest':str(source),'manifest_sha256':file_hash(source),
+        (root/'initial.json').write_text(json.dumps({'telemetry':{'observation':{'physics_settings':physics}}}))
+        metadata={'training_only':True,'sources':[{'split':source_split,'path':str(root)}],'manifest':str(source),'manifest_sha256':file_hash(source),
             'action_config':{**json.loads(json.dumps(asdict(config))),'gamma':gamma},'move_config':asdict(env.move_config),'observation_schema':env.schema}
         path=root/'data.npz'
         np.savez(path,observation=np.zeros((4,71),np.float32),next_observation=np.zeros((4,71),np.float32),

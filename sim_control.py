@@ -7,9 +7,10 @@ from grasp_geometry import GRASP_LOCAL_M, GRASP_REFERENCE
 
 
 class SimControl:
-    def __init__(self, stage, episode, mapping, output, contacts=True, gripper_stiffness=2.0, friction=1.0, magnets=None):
+    def __init__(self, stage, episode, mapping, output, contacts=True, gripper_stiffness=2.0, friction=1.0, magnets=None, robot_self_collisions=False, robot_collision_geometry='hulls'):
         self.driver = PhysicsEpisodeReplay(stage, episode, mapping, output, contacts=contacts,
-                                          gripper_stiffness=gripper_stiffness, friction=friction, magnets=magnets)
+                                          gripper_stiffness=gripper_stiffness, friction=friction, magnets=magnets,
+                                          robot_self_collisions=robot_self_collisions,robot_collision_geometry=robot_collision_geometry)
         self.driver.external_control = True
         self.physics_settings = json.loads((Path(output) / 'replay_audit.json').read_text())
         self.driver.index = 0

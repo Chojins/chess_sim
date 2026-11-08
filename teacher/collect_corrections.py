@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from teacher.grasp_checkpoints import ConservativeSAC,file_hash
-from teacher.reactive_oracle import ReactiveOracle
+from teacher.reactive_oracle import ReactiveOracle,FlowConfig
 from teacher.review_policy import make_env
 from teacher.train_grasp import evaluate_bank,save_status
 
@@ -43,10 +43,15 @@ def main():
         entries=[r for r in env.entries if r['family'] in args.families][:args.maximum_trials]
         if not entries or any(e['split']!='train' for e in entries): raise ValueError('Need training-only resets')
         model=ConservativeSAC.load(checkpoint,device='cpu')
-        mixture=TrainingMixture(model,ReactiveOracle(env.cartesian_config),args.beta,args.seed)
+        if source.get('oracle_action_field')=='configuration_reach_and_return_with_task_space_transport':
+            from teacher.configuration_oracle import ConfigurationReference
+            oracle=ConfigurationReference(env.controller,FlowConfig(**source.get('oracle_config',{})))
+        else:oracle=ReactiveOracle(env.cartesian_config,FlowConfig(**source.get('oracle_config',{})))
+        mixture=TrainingMixture(model,oracle,args.beta,args.seed)
         manifest={**source,'mode':'training_state_correction_collection','training_enabled':False,
             'teacher_label':'analytic_neural_training_mixture' if args.beta else 'frozen_neural_actor',
             'learned_policy':not bool(args.beta),'source_checkpoint':str(checkpoint.resolve()),
+            'runtime_oracle':bool(args.beta),'oracle_version':oracle.version,
             'source_checkpoint_sha256':digest,'oracle_intervention_probability':args.beta,
             'accepted_for_act_training':False,'ready_for_act_collection':False}
         (args.output/'manifest.json').write_text(json.dumps(manifest,indent=2))
